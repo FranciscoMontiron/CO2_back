@@ -1,0 +1,211 @@
+# ─────────────────────────────────────────────────────────────────────────────
+#  CO2_back — simulacion de la Raspberry Pi 5 (ADR-0005)
+#
+#  Todos los servicios corren como linux/arm64 con limites de CPU/RAM que
+#  espejan la Pi 5 (4 cores Cortex-A76 / 8 GB).
+#
+#  ⚠️  Bajo emulacion QEMU las mediciones de TIEMPO no son validas.
+#      RNF001 (<=500 ms) se verifica UNICAMENTE sobre hardware real.
+#
+#  Uso:
+#    docker compose up -d --build                          # simulacion arm64
+#    docker compose -f docker-compose.yml -f docker-compose.dev.yml up   # dev nativo
+# ─────────────────────────────────────────────────────────────────────────────
+
+x-platform: &platform
+  platform: ${TARGET_PLATFORM:-linux/arm64}
+
+x-logging: &logging
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+
+services:
+
+  # ── Persistencia (RNF008: >=10.000 ensayos sin degradacion) ────────────────
+  mysql:
+    <<: [*platform, *logging]
+    image: mysql:8.4
+    restart: unless-stopped
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_0900_ai_ci
+      # Ajustado al presupuesto de 2 GB del contenedor, no al de la maquina host
+      - --innodb-buffer-pool-size=768M
+      - --innodb-flush-log-at-trx-commit=2   # ver ADR-0006: reduce fsync
+      - --max-connections=100
+    environment:
+      MYSQL_DATABASE: ${MYSQL_DATABASE}
+      MYSQL_USER: ${MYSQL_USER}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-p${MYSQL_ROOT_PASSWORD}"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 60s   # arm64 emulado arranca lento
+    deploy:
+      resources:
+        limits: { cpus: "1.0", memory: 2G }
+    networks: [co2net]
+
+  # ── Bus unico: pub/sub + channel layer + heartbeat (ADR-0004) ─────────────
+  redis:
+    <<: [*platform, *logging]
+    image: redis:7.4-alpine
+    restart: unless-stopped
+    # Volatil a proposito: nada de lo que guarda debe sobrevivir un reinicio,
+    # y sin persistencia no castiga el almacenamiento (ADR-0006).
+    #
+    # --ignore-warnings: bajo QEMU arm64 (ADR-0005) Redis detecta un falso
+    # positivo del bug COW del kernel y se autotermina al arrancar. El bug solo
+    # afecta al background save, desactivado aqui, asi que suprimirlo es inocuo.
+    command: >
+      redis-server
+      --save ""
+      --appendonly no
+      --maxmemory 200mb
+      --maxmemory-policy noeviction
+      --ignore-warnings ARM64-COW-BUG
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 20s
+    deploy:
+      resources:
+        limits: { cpus: "0.25", memory: 256M }
+    networks: [co2net]
+
+  # ── API REST sincrona: comandos, CRUD, auth (ADR-0003, mitad WSGI) ────────
+  api:
+    <<: [*platform, *logging]
+    build:
+      context: .
+      dockerfile: docker/api/Dockerfile
+    restart: unless-stopped
+    command: >
+      gunicorn config.wsgi:application
+      --bind 0.0.0.0:8000
+      --workers 3
+      --threads 2
+      --timeout 60
+      --max-requests 1000
+      --max-requests-jitter 100
+      --access-logfile -
+      --error-logfile -
+    env_file: [.env]
+    depends_on:
+      mysql: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    volumes:
+      - static_files:/app/staticfiles
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/api/healthz/"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    deploy:
+      resources:
+        limits: { cpus: "1.0", memory: 1G }
+    networks: [co2net]
+
+  # ── Canal WebSocket asincrono (ADR-0003, mitad ASGI) ──────────────────────
+  #   Misma imagen que `api`, distinto comando. La separacion es de PROCESO,
+  #   no de codigo: evita migrar las vistas DRF sync a ASGI.
+  ws:
+    <<: [*platform, *logging]
+    build:
+      context: .
+      dockerfile: docker/api/Dockerfile
+    restart: unless-stopped
+    command: daphne -b 0.0.0.0 -p 9000 --proxy-headers config.asgi:application
+    env_file: [.env]
+    depends_on:
+      mysql: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:9000/api/healthz/"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    deploy:
+      resources:
+        limits: { cpus: "0.5", memory: 768M }
+    networks: [co2net]
+
+  # ── Lazo de control y E-Stop — dueño exclusivo del GPIO (ADR-0002) ────────
+  #   Django NO accede al hardware. Nunca. Ni para leer.
+  controller:
+    <<: [*platform, *logging]
+    build:
+      context: .
+      dockerfile: docker/controller/Dockerfile
+    restart: unless-stopped
+    env_file: [.env]
+    depends_on:
+      redis: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD-SHELL", "test -f /tmp/controller.alive"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 30s
+    deploy:
+      resources:
+        limits: { cpus: "1.0", memory: 512M }
+    # Sobre la Pi 5 real, descomentar para dar acceso al GPIO (chip RP1).
+    # NOTA: en la Pi 5 el RPi.GPIO clasico no funciona; usar lgpio/gpiod.
+    # devices:
+    #   - /dev/gpiochip0:/dev/gpiochip0
+    #   - /dev/gpiochip4:/dev/gpiochip4
+    networks: [co2net]
+
+  # ── Terminacion TLS (RNF003) y ruteo /api vs /ws ──────────────────────────
+  nginx:
+    <<: [*platform, *logging]
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    environment:
+      HOST_HTTPS_PORT: ${HOST_HTTPS_PORT:-8443}
+    ports:
+      - "${HOST_HTTP_PORT:-8080}:80"
+      - "${HOST_HTTPS_PORT:-8443}:443"
+    volumes:
+      # La imagen oficial corre envsubst sobre /etc/nginx/templates/*.template
+      # y deja el resultado en conf.d/. Solo sustituye variables de entorno
+      # realmente definidas, asi que $$host y $$request_uri quedan intactas.
+      - ./docker/nginx/default.conf.template:/etc/nginx/templates/default.conf.template:ro
+      - ./docker/nginx/certs:/etc/nginx/certs:ro
+      - static_files:/var/www/static:ro
+    depends_on:
+      api: { condition: service_healthy }
+      ws:  { condition: service_healthy }
+    healthcheck:
+      # 127.0.0.1 y no localhost: la config hace `listen 80` (solo IPv4) y dentro
+      # del contenedor localhost resuelve primero a ::1 -> connection refused.
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1/nginx-health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    deploy:
+      resources:
+        limits: { cpus: "0.25", memory: 128M }
+    networks: [co2net]
+
+volumes:
+  mysql_data:
+  static_files:
+
+networks:
+  co2net:
+    driver: bridge

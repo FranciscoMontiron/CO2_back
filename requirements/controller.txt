@@ -1,0 +1,15 @@
+# ── Proceso controlador (ADR-0002) ───────────────────────────────────────────
+# Deliberadamente minimo: este proceso corre el lazo de tiempo real y no debe
+# arrastrar Django, el ORM ni el stack web.
+
+redis==5.0.8
+pydantic==2.9.1
+pydantic-settings==2.5.2
+
+# ── Acceso a GPIO ────────────────────────────────────────────────────────────
+# Solo tiene sentido sobre la Pi 5 real. En la simulacion se usa el HAL
+# simulado (CONTROLLER_HAL=simulado), por eso queda comentado: instalarlo en
+# el contenedor emulado no aporta y complica el build.
+#
+# En la Pi 5 el RPi.GPIO clasico NO funciona (chip RP1). Usar:
+# gpiod==2.2.1 ; platform_machine == "aarch64"

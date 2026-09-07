@@ -1,0 +1,29 @@
+# ─────────────────────────────────────────────────────────────────────────────
+#  Override de desarrollo — arquitectura NATIVA (sin emulacion QEMU)
+#
+#  Ciclo rapido: recarga en caliente y builds rapidos, sin la penalidad de QEMU.
+#  NO valida compatibilidad arm64 (ese es el objetivo de ADR-0005), asi que
+#  antes de cerrar cada entrega hay que correr la simulacion arm64.
+#
+#    TARGET_PLATFORM=linux/amd64 docker compose \
+#      -f docker-compose.yml -f docker-compose.dev.yml up --build
+#
+#  (en Windows/PowerShell:  $env:TARGET_PLATFORM="linux/amd64"  primero,
+#   o dejarlo fijado en el archivo .env)
+# ─────────────────────────────────────────────────────────────────────────────
+
+services:
+  api:
+    command: python manage.py runserver 0.0.0.0:8000
+    volumes:
+      - ./:/app
+    environment:
+      DJANGO_DEBUG: "1"
+
+  ws:
+    volumes:
+      - ./:/app
+
+  controller:
+    volumes:
+      - ./:/app

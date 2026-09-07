@@ -1,0 +1,115 @@
+# ─────────────────────────────────────────────────────────────────────────────
+#  nginx — terminacion TLS (RNF003) y ruteo del split WSGI/ASGI (ADR-0003)
+#
+#    /api/*  → gunicorn (WSGI, sincrono)   → comandos, CRUD, auth
+#    /ws/*   → daphne   (ASGI, asincrono)  → telemetria, alarmas, estado
+# ─────────────────────────────────────────────────────────────────────────────
+
+upstream co2_api {
+    server api:8000;
+    keepalive 32;
+}
+
+upstream co2_ws {
+    server ws:9000;
+}
+
+# El token de auth del WebSocket viaja en la query string, porque el browser no
+# permite mandar headers en el handshake (ADR-0003). Este formato registra solo
+# $uri y descarta $args, para que el token no quede en los logs.
+log_format ws_safe '$remote_addr - [$time_local] "$request_method $uri" '
+                   '$status $body_bytes_sent "$http_user_agent"';
+
+# ── HTTP: solo redirige a HTTPS (RNF003) ─────────────────────────────────────
+server {
+    listen 80;
+    server_name _;
+
+    # Excluido del redirect para que el healthcheck del contenedor no dependa de TLS
+    location = /nginx-health {
+        access_log off;
+        return 200 "ok\n";
+    }
+
+    location / {
+        return 301 https://$host:${HOST_HTTPS_PORT}$request_uri;
+    }
+}
+
+# ── HTTPS ────────────────────────────────────────────────────────────────────
+server {
+    listen 443 ssl;
+    http2 on;
+    server_name _;
+
+    ssl_certificate     /etc/nginx/certs/co2.crt;
+    ssl_certificate_key /etc/nginx/certs/co2.key;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_ciphers         HIGH:!aNULL:!MD5;
+    ssl_session_cache   shared:SSL:10m;
+    ssl_session_timeout 10m;
+
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header X-Frame-Options        "DENY"    always;
+    add_header Referrer-Policy        "same-origin" always;
+
+    client_max_body_size 10m;
+
+    gzip on;
+    gzip_types application/json text/css application/javascript;
+    gzip_min_length 1024;
+
+    # ── API REST sincrona ────────────────────────────────────────────────────
+    location /api/ {
+        proxy_pass http://co2_api;
+        proxy_http_version 1.1;
+        proxy_set_header Connection        "";
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Host  $host;
+
+        # RNF001: los comandos criticos no deben quedarse esperando. Si el
+        # backend no respondio en 5 s, algo esta mal y conviene fallar rapido
+        # para que el front lo muestre, en vez de dejar al operador colgado.
+        proxy_connect_timeout 5s;
+        proxy_send_timeout    30s;
+        proxy_read_timeout    30s;
+    }
+
+    # ── Canal WebSocket ──────────────────────────────────────────────────────
+    location /ws/ {
+        access_log /var/log/nginx/access.log ws_safe;
+
+        proxy_pass http://co2_ws;
+        proxy_http_version 1.1;
+
+        # Sin estas dos cabeceras el handshake de WebSocket no ocurre.
+        proxy_set_header Upgrade    $http_upgrade;
+        proxy_set_header Connection "upgrade";
+
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        # Una conexion de telemetria esta abierta por horas. Con el default de
+        # 60 s nginx la cortaria constantemente. El ping/pong de la aplicacion
+        # sigue siendo necesario para detectar conexiones zombie (ADR-0003).
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
+        proxy_buffering    off;
+    }
+
+    location /static/ {
+        alias /var/www/static/;
+        expires 7d;
+        access_log off;
+    }
+
+    location = /nginx-health {
+        access_log off;
+        return 200 "ok\n";
+    }
+}

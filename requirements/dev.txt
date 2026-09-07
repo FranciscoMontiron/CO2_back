@@ -1,0 +1,11 @@
+-r base.txt
+
+# ── Tests y cobertura (RNF007: >=70%) ────────────────────────────────────────
+pytest==8.3.2
+pytest-django==4.9.0
+pytest-asyncio==0.24.0
+pytest-cov==5.0.0
+
+# ── Estilo (RNF007: PEP8 + docstrings) ───────────────────────────────────────
+ruff==0.6.4
+black==24.8.0

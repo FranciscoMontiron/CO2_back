@@ -51,7 +51,16 @@ THIRD_PARTY_APPS = [
 ]
 
 LOCAL_APPS: list[str] = [
-    # El modelo de dominio se agrega cuando se cierre el Diagrama de Clases v4.
+    # El orden importa solo para la legibilidad; Django resuelve dependencias
+    # por las migraciones. `usuarios` va primero porque define AUTH_USER_MODEL.
+    # `comun` no tiene modelos: se instala para que Django encuentre el comando
+    # de carga inicial en comun/management/commands/.
+    "comun",
+    "usuarios",
+    "fabricacion",
+    "programas",
+    "trazabilidad",
+    "operacion",
 ]
 
 INSTALLED_APPS = DJANGO_APPS + THIRD_PARTY_APPS + LOCAL_APPS
@@ -63,6 +72,9 @@ MIDDLEWARE = [
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
     "django.contrib.auth.middleware.AuthenticationMiddleware",
+    # Despues de AuthenticationMiddleware: necesita `request.user` ya cargado
+    # para saber a quien atribuir cada asiento de auditoria (RN010).
+    "usuarios.auditoria.AuditoriaMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
 ]
@@ -106,6 +118,11 @@ DATABASES = {
 }
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
+
+# El modelo de usuario propio se fija ANTES de la primera migracion: cambiarlo
+# despues obliga a recrear la base. `usuarios.Usuario` extiende AbstractUser en
+# vez de reimplementar autenticacion (ver el docstring de usuarios/models.py).
+AUTH_USER_MODEL = "usuarios.Usuario"
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  Redis: bus unico con bases logicas separadas (ADR-0004)

@@ -14,6 +14,8 @@
 
 services:
   api:
+    build:
+      target: dev
     command: python manage.py runserver 0.0.0.0:8000
     volumes:
       - ./:/app
@@ -21,6 +23,8 @@ services:
       DJANGO_DEBUG: "1"
 
   ws:
+    build:
+      target: dev
     volumes:
       - ./:/app
 

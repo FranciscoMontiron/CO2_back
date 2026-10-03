@@ -43,6 +43,9 @@ services:
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
     volumes:
       - mysql_data:/var/lib/mysql
+      # Se ejecuta solo al inicializar un volumen vacio. Concede al usuario de
+      # la app permiso para crear la base `test_*` que necesita pytest.
+      - ./docker/mysql/initdb:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-p${MYSQL_ROOT_PASSWORD}"]
       interval: 10s
@@ -89,6 +92,7 @@ services:
     build:
       context: .
       dockerfile: docker/api/Dockerfile
+      target: runtime
     restart: unless-stopped
     command: >
       gunicorn config.wsgi:application
@@ -125,6 +129,7 @@ services:
     build:
       context: .
       dockerfile: docker/api/Dockerfile
+      target: runtime
     restart: unless-stopped
     command: daphne -b 0.0.0.0 -p 9000 --proxy-headers config.asgi:application
     env_file: [.env]

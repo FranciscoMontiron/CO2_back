@@ -56,6 +56,12 @@ addopts = [
     "-m", "not hardware",
     "--cov=config",
     "--cov=controller",
+    "--cov=comun",
+    "--cov=usuarios",
+    "--cov=fabricacion",
+    "--cov=programas",
+    "--cov=trazabilidad",
+    "--cov=operacion",
     "--cov-report=term-missing",
     "--cov-fail-under=70",
 ]

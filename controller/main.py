@@ -14,10 +14,14 @@ Lo que va a vivir aca:
   interfaz, seleccionadas por ``CONTROLLER_HAL``.
 * Lazo de control a ``CONTROLLER_LOOP_HZ`` (100 Hz): lee sensores, evalua
   umbrales, actua.
-* Cadena ``Umbral.evaluar() -> ParadaEmergencia.ejecutar() ->
-  Componente.apagadoSeguro()`` del diagrama de clases.
+* Cadena ``Umbral.evaluar() -> AccionUmbral.PARADA_EMERGENCIA ->
+  Componente.cambiarEstado()`` del diagrama de clases, asentando el
+  ``EventoEmergencia`` con su ``tiempoRespuestaMs`` (la evidencia de RNF001).
+  El apagado seguro tiene orden -- shutter antes que la fuente HV -- y esa
+  secuencia se resuelve aca, no en el modelo.
 * Publicacion de telemetria a ``CONTROLLER_TELEMETRY_HZ`` (1 Hz, RF009) sobre
-  el pub/sub de Redis (ADR-0004).
+  el pub/sub de Redis (ADR-0004). Es **efimera**: no se persiste ninguna
+  muestra, el front la consume en vivo y se descarta (ADR-0007).
 * Suscripcion al canal de comandos que publica la API REST.
 
 Lo que NO va a vivir aca: nada que necesite Django, el ORM o la base de datos.

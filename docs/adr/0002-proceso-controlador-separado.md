@@ -7,10 +7,17 @@
 
 RNF001 exige que los comandos críticos (parada de emergencia, actuadores) respondan
 en **≤500 ms, medido en 10 pruebas consecutivas**. El camino del diagrama de clases es
-`Umbral.evaluar() → ParadaEmergencia.ejecutar() → Componente.apagadoSeguro()`.
+`Umbral.evaluar() → AccionUmbral.PARADA_EMERGENCIA → Componente.cambiarEstado()`,
+dejando asentado un `EventoEmergencia` con su `tiempoRespuestaMs` — que es la
+evidencia con la que se verifica este requisito.
 
-Además, el sistema necesita un lazo **continuo**: leer temperatura, caudal y potencia
-y evaluar umbrales sin depender de que llegue un request.
+> El apagado seguro tiene **orden** (shutter antes que la fuente HV) y debe ser
+> atómico. El diagrama lo expresa como `cambiarEstado()` sobre cada componente; la
+> secuencia correcta es responsabilidad de este proceso, no del modelo.
+
+Además, el sistema necesita un lazo **continuo**: leer sensores y evaluar umbrales
+sin depender de que llegue un request. Las variables monitoreadas están fijadas en
+[ADR-0007](0007-telemetria-en-vivo-sin-persistencia.md).
 
 Se evaluó implementarlo dentro de Django como una vista DRF.
 

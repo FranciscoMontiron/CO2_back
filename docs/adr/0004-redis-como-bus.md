@@ -34,10 +34,13 @@ controller  --publish-->  redis/0  --subscribe-->  consumer WS  -->  front
    api REST --publish comandos--> redis/0
 ```
 
-**La telemetría no pasa por MySQL en el camino al front.** El controlador publica a
-pub/sub y el consumer reenvía. La persistencia en MySQL es un consumidor aparte que
-escribe **en lote**, no en el camino caliente. Esto ataca directamente el desgaste
-de escritura de la tarjeta (ver ADR-0006).
+**La telemetría no pasa por MySQL.** El controlador publica a pub/sub y el consumer
+reenvía al front. No hay consumidor de persistencia: la telemetría es efímera y no se
+guarda ninguna muestra ([ADR-0007](0007-telemetria-en-vivo-sin-persistencia.md)).
+
+Eso convierte a Redis en el **único** camino de la telemetría, y por lo tanto en una
+pieza más crítica que antes, no menos: sin él no hay dato en pantalla. Lo que no
+cambia es la seguridad — el interlock de hardware no pasa por acá (ADR-0002).
 
 ## Consecuencias
 

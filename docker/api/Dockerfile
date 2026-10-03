@@ -51,3 +51,14 @@ EXPOSE 8000 9000
 #   api → gunicorn config.wsgi:application
 #   ws  → daphne  config.asgi:application
 CMD ["gunicorn", "config.wsgi:application", "--bind", "0.0.0.0:8000"]
+
+
+# ── Etapa de desarrollo ──────────────────────────────────────────────────────
+#  Agrega el herramental de RNF007 (pytest, ruff, black) sobre la imagen de
+#  runtime. NO se despliega: el artefacto de produccion es `runtime`, que queda
+#  sin dependencias de test. La usa docker-compose.dev.yml via `target: dev`.
+FROM runtime AS dev
+USER root
+COPY requirements/ /tmp/requirements/
+RUN pip install -r /tmp/requirements/dev.txt && rm -rf /tmp/requirements
+USER co2

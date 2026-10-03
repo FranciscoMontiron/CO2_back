@@ -38,7 +38,7 @@ Escribirlo ahora contra una suposición significa reescribirlo después.
 | **RF009** | Telemetría ≥ **1 Hz** | WebSocket sobre Redis pub/sub — [ADR-0003](docs/adr/0003-telemetria-websocket-split-wsgi-asgi.md) |
 | **RNF003** | HTTPS entre front y back | Terminación TLS en nginx |
 | **RNF007** | PEP8, cobertura ≥ **70 %**, docstrings en toda función pública | `ruff` + `pytest-cov` con el umbral en `pyproject.toml` |
-| **RNF008** | MySQL, ≥ **10.000 ensayos** sin degradación | MySQL 8.4 + [ADR-0006](docs/adr/0006-almacenamiento-nvme-retencion.md) |
+| **RNF008** | MySQL, ≥ **10.000 ensayos** sin degradación | MySQL 8.4 + [ADR-0007](docs/adr/0007-telemetria-en-vivo-sin-persistencia.md) |
 
 Trazabilidad completa en `Proyecto Final Nosotros/Matriz de Trazabilidad de Requisitos.xlsx`.
 
@@ -48,7 +48,7 @@ Trazabilidad completa en `Proyecto Final Nosotros/Matriz de Trazabilidad de Requ
 |---|---|
 | Actividad 4 — Alcance y Requisitos | Los RF/RNF y la fijación del stack |
 | Actividad 4 — Entregables y EDT | El entregable 1.4 (backend) y su ubicación en el cronograma |
-| Actividad 7 — Plan de Gestión del Presupuesto | Restricción de hardware — relevante para [ADR-0006](docs/adr/0006-almacenamiento-nvme-retencion.md) |
+| Actividad 7 — Plan de Gestión del Presupuesto | Restricción de hardware. El NVMe dejó de ser bloqueante — ver [ADR-0007](docs/adr/0007-telemetria-en-vivo-sin-persistencia.md) |
 | Diagrama de Clases v4 | **Bloqueante** del modelo de dominio |
 
 ---
@@ -316,5 +316,6 @@ a propósito: [ADR-0002](docs/adr/0002-proceso-controlador-separado.md).
    sobre la Pi real.
 4. **Consumer de telemetría** y el hook del front.
 5. **Endpoints que consume `src/mock/api.ts`**, contra el contrato de `/api/schema/`.
-6. **Confirmar [ADR-0006](docs/adr/0006-almacenamiento-nvme-retencion.md)** — NVMe y
-   política de retención. 
+6. **Confirmar con el CIOp si una red se caracteriza una sola vez.** De eso depende la
+   multiplicidad de `Espectro` y dónde cuelga `PicoDeAtenuacion`
+   ([ADR-0007](docs/adr/0007-telemetria-en-vivo-sin-persistencia.md)). 

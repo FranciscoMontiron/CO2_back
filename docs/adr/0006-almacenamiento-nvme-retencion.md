@@ -1,7 +1,18 @@
 # ADR-0006 — Arranque desde NVMe y política de retención de telemetría
 
-**Estado:** **Propuesta** — requiere confirmación de presupuesto de hardware
+**Estado:** **Reemplazada por [ADR-0007](0007-telemetria-en-vivo-sin-persistencia.md)**
 **Fecha:** 2026-09-07
+
+> **Por qué fue reemplazada.** Este ADR parte de que la telemetría de RF009 debe
+> persistirse muestra a muestra. Al cerrar el diagrama de clases se descartó ese
+> supuesto: la telemetría es efímera y lo que se conserva es el resultado analizado
+> de cada fabricación. Sin escritura continua, la justificación del NVMe por vida
+> útil de la microSD desaparece y la política de retención queda sin objeto.
+>
+> **Qué de acá sigue valiendo:** la estimación de volumen y el análisis de desgaste
+> de microSD de más abajo son correctos y siguen siendo la referencia — son
+> justamente lo que permitió medir el costo de persistir y decidir no hacerlo.
+> El NVMe sigue siendo deseable por rendimiento, pero ya no es bloqueante.
 
 ## Contexto
 

@@ -12,11 +12,6 @@ from __future__ import annotations
 
 import statistics
 
-# Tolerancia relativa al comparar el paso del CSV contra la resolucion del
-# procedimiento. El OSA redondea la longitud de onda que exporta, asi que el paso
-# real oscila levemente alrededor del nominal.
-TOLERANCIA_PASO = 0.02
-
 
 class EspectroInvalidoError(ValueError):
     """El CSV no se puede convertir en un espectro valido."""
@@ -81,43 +76,33 @@ def leer_csv_osa(contenido: str) -> list[tuple[float, float]]:
     return puntos
 
 
-def verificar_grilla(puntos: list[tuple[float, float]], resolucion: float) -> None:
-    """Verifica que el barrido sea regular y coincida con la resolucion declarada.
+def verificar_orden(puntos: list[tuple[float, float]]) -> None:
+    """Verifica que las longitudes de onda sean estrictamente crecientes.
 
-    Es la salvaguarda que hace seguro no guardar las longitudes de onda. El
-    :class:`~fabricacion.models.Espectro` las reconstruye como
-    ``inicial + i * resolucion``: si el CSV vino con otro paso, la reconstruccion
-    devolveria longitudes de onda **equivocadas sin ningun aviso**. Mejor
-    rechazar el archivo que corromper la caracterizacion en silencio.
+    En M1 esta funcion ademas exigia que el paso coincidiera con la resolucion
+    del procedimiento, porque el espectro reconstruia el eje en vez de
+    guardarlo. El primer CSV real del laboratorio vino diezmado con paso
+    variable (de 1 a 10 nm) y esa exigencia lo habria rechazado. Ahora el eje se
+    guarda tal cual (ADR-0008), y lo unico que se exige es que sea un barrido.
 
     Args:
         puntos: Pares ``(nm, dB)`` leidos del CSV.
-        resolucion: Paso nominal del procedimiento, en nm.
 
     Raises:
-        EspectroInvalidoError: Si las longitudes de onda no son crecientes, o si el paso
-            no coincide con la resolucion del procedimiento.
+        EspectroInvalidoError: Si una longitud de onda no supera a la anterior.
     """
-    pasos = [b[0] - a[0] for a, b in zip(puntos, puntos[1:], strict=False)]
-    if any(p <= 0 for p in pasos):
-        raise EspectroInvalidoError(
-            "Las longitudes de onda del CSV no son estrictamente crecientes."
-        )
-
-    paso_medio = statistics.fmean(pasos)
-    if abs(paso_medio - resolucion) > resolucion * TOLERANCIA_PASO:
-        raise EspectroInvalidoError(
-            f"El paso del CSV ({paso_medio:.4f} nm) no coincide con la resolucion del "
-            f"procedimiento ({resolucion} nm). Se usaria la grilla equivocada para "
-            "reconstruir las longitudes de onda: revisar que el procedimiento elegido "
-            "sea el que se uso en el OSA."
-        )
+    for (anterior, _), (actual, _) in zip(puntos, puntos[1:], strict=False):
+        if actual <= anterior:
+            raise EspectroInvalidoError(
+                f"Las longitudes de onda del CSV no son estrictamente crecientes "
+                f"({anterior} nm seguido de {actual} nm)."
+            )
 
 
 def detectar_minimos(
     transmitancias: list[float],
     profundidad_minima: float = 3.0,
-    ancho_minimo: int = 3,
+    ancho_minimo: int = 1,
 ) -> list[int]:
     """Encuentra las resonancias del espectro: los valles de atenuacion.
 
@@ -142,9 +127,11 @@ def detectar_minimos(
     Args:
         transmitancias: Los valores en dB, en orden de longitud de onda.
         profundidad_minima: Cuanto debajo de la base tiene que caer el tramo, en dB.
-        ancho_minimo: Cantidad minima de puntos consecutivos del tramo. Filtra el
-            ruido de un solo punto: una resonancia real, a 0,05 nm de
-            resolucion, abarca decenas de puntos.
+        ancho_minimo: Cantidad minima de puntos consecutivos del tramo. Sirve
+            para filtrar ruido de un solo punto **cuando la grilla es fina y
+            regular**. Por defecto es 1 (sin filtro): en un CSV diezmado una
+            resonancia real puede quedar representada por un unico punto, como
+            el valle de 1200 nm del archivo de ejemplo del laboratorio.
 
     Returns:
         Los indices de las resonancias, ordenados por posicion.

@@ -128,6 +128,32 @@ class VariableMonitoreada(models.TextChoices):
     TEMPERATURA_AMBIENTE = "TEMPERATURA_AMBIENTE", "Temperatura ambiente [C]"
 
 
+# Unidad de cada variable, separada del nombre. La etiqueta legible del enum la
+# incluye entre corchetes para el admin; la API la expone aparte para que el front
+# no tenga que parsear texto.
+UNIDAD_DE_VARIABLE = {
+    VariableMonitoreada.TEMPERATURA_AGUA: "°C",
+    VariableMonitoreada.CAUDAL_REFRIGERANTE: "L/min",
+    VariableMonitoreada.POTENCIA_LASER: "W",
+    VariableMonitoreada.TENSION_AT: "kV",
+    VariableMonitoreada.CORRIENTE_AT: "mA",
+    VariableMonitoreada.POSICION_MOTOR: "mm",
+    VariableMonitoreada.TEMPERATURA_AMBIENTE: "°C",
+}
+
+
+def nombre_de_variable(variable: str) -> str:
+    """Devuelve el nombre legible de una variable, sin la unidad.
+
+    Args:
+        variable: Un valor de :class:`VariableMonitoreada`.
+
+    Returns:
+        Por ejemplo ``"Temperatura del agua"``.
+    """
+    return VariableMonitoreada(variable).label.split(" [")[0]
+
+
 class Severidad(models.TextChoices):
     """Gravedad de una alerta."""
 

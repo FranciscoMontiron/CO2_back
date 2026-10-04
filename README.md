@@ -10,21 +10,23 @@ con la capa de API aislada en `src/mock/api.ts` lista para conectar.
 
 ## Estado actual
 
-> **Esta entrega es infraestructura y decisiones. No hay lógica de dominio todavía.**
+> **Back y front integrados.** Con un `docker compose up` se ve el sistema completo en
+> `https://localhost:8443`: login, historial de ensayos, detalle con el espectro real del
+> OSA, programas, alertas y administración.
 
 | | |
 |---|---|
-| ✅ | Infra completa: 6 contenedores `linux/arm64` con límites que espejan la Pi 5 |
-| ✅ | Django + DRF arrancando, con `/api/healthz/` verificando MySQL, Redis y el controlador |
-| ✅ | Terminación TLS y ruteo del split WSGI/ASGI en nginx |
-| ✅ | Esqueleto del proceso controlador publicando heartbeat |
-| ✅ | Decisiones de arquitectura documentadas en [`docs/adr/`](docs/adr/) |
-| ⏳ | Modelo de dominio — **espera el Diagrama de Clases v4** |
-| ⏳ | Lazo de control, HAL de hardware y E-Stop |
-| ⏳ | Consumer de telemetría y endpoints que consume el front |
+| ✅ | Infra: 7 contenedores `linux/arm64` con límites que espejan la Pi 5, front incluido |
+| ✅ | Modelo de dominio completo (M1), con auditoría automática (RN010) |
+| ✅ | API REST con sesión JWT y permisos por rol — contrato en `/api/docs/` |
+| ✅ | Front conectado: todo lo que muestra sale de la API, salvo lo que se indica abajo |
+| ✅ | Decisiones de arquitectura en [`docs/adr/`](docs/adr/) |
+| ⏳ | **Simulado en el front:** telemetría en vivo, E-Stop y el procedimiento de «Nuevo ensayo» |
+| ⏳ | Lazo de control, HAL de hardware y E-Stop real (M3/M4) |
+| ⏳ | Canal WebSocket de telemetría (M4) |
 
-El modelo de dominio se dejó fuera a propósito: depende del diagrama de clases v4.
-Escribirlo ahora contra una suposición significa reescribirlo después.
+Lo simulado depende del proceso controlador, que todavía solo publica su heartbeat. El
+indicador de conexión del front sí es real: consulta `/api/healthz/`.
 
 ---
 
@@ -120,6 +122,8 @@ ya están escritos.
 ## Requisitos previos
 
 - **Docker Desktop corriendo** (no solo instalado — ver troubleshooting)
+- **El repo del front clonado al lado de este**: `../CO2_front`. El compose lo construye
+  desde ahí. Si está en otro lado, fijar `FRONT_DIR` en `.env`.
 - Git Bash u otro shell POSIX, para `gen-certs.sh`
 - Para desarrollo fuera de contenedores: Python 3.12+
 
@@ -128,7 +132,9 @@ ya están escritos.
 ## Puesta en marcha
 
 ```bash
+# Los dos repos, uno al lado del otro
 git clone https://github.com/FranciscoMontiron/CO2_back.git
+git clone https://github.com/Fedebravo12/CO2_front.git
 cd CO2_back
 
 # 1. Entorno. Editar .env y cambiar TODAS las contraseñas.
@@ -137,9 +143,19 @@ cp .env.example .env
 # 2. Certificado autofirmado para desarrollo (RNF003) (terminal bash)
 sh docker/nginx/gen-certs.sh
 
-# 3. Levantar la simulación arm64 de la Pi 5
+# 3. Levantar la simulación arm64 de la Pi 5 (back + front)
 docker compose up -d --build
+
+# 4. Base de datos y datos de demostración
+docker compose exec api python manage.py migrate
+docker compose exec api python manage.py cargar_datos_iniciales --con-ejemplo
 ```
+
+Abrir **https://localhost:8443** e ingresar con `admin`, `investigador` u `operador`
+(la contraseña es igual al usuario). Cada uno ve lo que su rol permite.
+
+> Los usuarios de demo los crea `--con-ejemplo`. **No usar esa opción en un despliegue
+> real**: las contraseñas son públicas.
 
 El primer build es **lento**: bajo emulación QEMU, `mysqlclient` se compila desde
 fuente para `aarch64`. Es esperable, y es justamente el hallazgo que
@@ -148,7 +164,7 @@ fuente para `aarch64`. Es esperable, y es justamente el hallazgo que
 ### Verificación
 
 ```bash
-docker compose ps                                   # los 6 servicios healthy
+docker compose ps                                   # los 7 servicios healthy
 curl -k https://localhost:8443/api/healthz/         # estado de dependencias
 ```
 
@@ -167,13 +183,14 @@ Respuesta esperada:
 
 | URL | Qué es |
 |---|---|
+| `https://localhost:8443/` | **El sistema** (front) |
 | `https://localhost:8443/api/healthz/` | Estado de las dependencias |
 | `https://localhost:8443/api/docs/` | Documentación interactiva de la API |
 | `https://localhost:8443/api/schema/` | OpenAPI en crudo — el contrato para el front |
 | `https://localhost:8443/admin/` | Admin de Django |
 
 El browser va a advertir que el certificado no es de confianza: es lo esperable en un
-autofirmado.
+autofirmado. Si un antivirus bloquea la página, ver troubleshooting.
 
 ### Desarrollo rápido (arquitectura nativa)
 
@@ -189,20 +206,25 @@ En PowerShell: `$env:TARGET_PLATFORM="linux/amd64"` antes, o fijarlo en `.env`.
 > Este modo **no valida compatibilidad arm64**. Antes de cerrar cada entrega hay que
 > correr la simulación arm64.
 
+Para el front con recarga en caliente, en el repo `CO2_front`: `npm run dev`. Vite sirve
+en `http://localhost:5173` y reenvía `/api` a este nginx, así que necesita el backend
+levantado.
+
 ---
 
 ## Servicios
 
 | Servicio | Imagen / base | CPU | RAM | Rol |
 |---|---|---|---|---|
-| `nginx` | nginx 1.27-alpine | 0.25 | 128 MB | TLS (RNF003), ruteo `/api` vs `/ws` |
+| `nginx` | nginx 1.27-alpine | 0.25 | 128 MB | TLS (RNF003), ruteo `/api`, `/ws`, `/admin` y front |
+| `front` | nginx 1.27-alpine | 0.25 | 64 MB | Estáticos de la SPA de React (repo `CO2_front`) |
 | `api` | python 3.12-slim | 1.0 | 1 GB | gunicorn/WSGI — REST síncrona |
 | `ws` | *(misma imagen)* | 0.5 | 768 MB | daphne/ASGI — canal WebSocket |
 | `controller` | python 3.12-slim | 1.0 | 512 MB | Lazo de control, E-Stop, GPIO |
 | `mysql` | mysql 8.4 | 1.0 | 2 GB | Persistencia (RNF008) |
 | `redis` | redis 7.4-alpine | 0.25 | 256 MB | Bus único (ADR-0004) |
 
-Total: **4 CPU / ~4,6 GB**, dentro del presupuesto de una Pi 5 de 8 GB.
+Total: **4,25 CPU / ~4,7 GB**, dentro del presupuesto de una Pi 5 de 8 GB.
 
 `api` y `ws` comparten la misma imagen y cambian solo el comando: la separación de
 [ADR-0003](docs/adr/0003-telemetria-websocket-split-wsgi-asgi.md) es de **proceso**,
@@ -264,23 +286,25 @@ en una función pública **falla el lint**. Es la traducción literal de RNF007.
 
 ---
 
-## Conectar el front
+## Integración con el front
 
-El front tiene la capa de API aislada en `src/mock/api.ts` y el estado en vivo en
-`src/context/SystemContext.tsx`. La conexión se hace en dos lugares:
+El front vive en [`CO2_front`](https://github.com/Fedebravo12/CO2_front). El nginx de este
+repo lo sirve en `/` y la API en `/api/`, **desde el mismo origen**: no hay CORS, y el
+front usa rutas relativas igual que detrás del proxy de Vite.
 
-1. **REST** — reemplazar el cuerpo de las funciones de `src/mock/api.ts` por `fetch('/api/...')`,
-   manteniendo las mismas firmas. El contrato está en `/api/schema/`.
-2. **Telemetría** — un hook `useTelemetria()` que reemplaza el `setInterval` de
-   `SystemContext.tsx`. El resto de la app consume `telemetria` del contexto y no se
-   entera del transporte.
+- **Capa de API** — `src/api/client.ts` en el front. Traduce el contrato de este backend
+  (snake_case, fechas ISO, unidades en el nombre del campo) a los tipos que ya usaban las
+  pantallas. Si la API cambia, se toca ese archivo y no las páginas.
+- **Sesión** — JWT. El token de acceso dura 30 min y el front lo renueva solo; el de
+  refresco dura 12 h. Van en `sessionStorage`: la PC del laboratorio es compartida y
+  cerrar el navegador tiene que cerrar la sesión.
+- **Telemetría** — sigue simulada en `src/context/SystemContext.tsx`. Cuando exista el
+  canal WebSocket, se reemplaza el `setInterval` por un hook y el resto de la app no se
+  entera del transporte ([ADR-0003](docs/adr/0003-telemetria-websocket-split-wsgi-asgi.md)).
 
-Ese aislamiento es deliberado: es lo que hace que
-[la decisión de transporte sea reversible en ~1 día](docs/adr/0003-telemetria-websocket-split-wsgi-asgi.md).
-
-Cuando el controlador esté caído (heartbeat vencido), el front debe mostrar
-**SIN CONEXIÓN AL CONTROLADOR** y bloquear los comandos — nunca telemetría congelada
-como si fuera actual.
+Cuando el controlador esté caído (heartbeat vencido), el front lo muestra en la barra
+lateral. Al conectar los comandos reales, además tiene que **bloquearlos** — nunca
+telemetría congelada como si fuera actual.
 
 ---
 
@@ -298,6 +322,24 @@ en la etapa `builder` de `docker/api/Dockerfile`.
 **`nginx: [emerg] cannot load certificate`**
 Falta generar los certificados: `sh docker/nginx/gen-certs.sh`.
 
+**El antivirus bloquea `https://localhost:8443`** (por ejemplo, Kaspersky: *«Se evitó la
+visita a un sitio web no confiable»*)
+El antivirus intercepta el HTTPS y rechaza el certificado autofirmado. `curl -k` funciona
+porque no pasa por ese filtro. Dos salidas:
+- Aceptar el riesgo desde la página del antivirus, o agregar `localhost` a sus exclusiones.
+- Confiar en el certificado de desarrollo para tu usuario de Windows (PowerShell):
+  `certutil -addstore -user Root docker\nginx\certs\co2.crt`. Ojo: la clave privada queda
+  en el disco, así que conviene quitarlo cuando termines (`certmgr.msc` → *Entidades de
+  certificación raíz de confianza*).
+
+**`pytest` falla con `Access denied ... to database 'test_co2'`**
+El volumen de MySQL es anterior al script de `docker/mysql/initdb/`, que solo corre al
+inicializar un volumen vacío. `docker compose down -v` y volver a levantar (borra la base).
+
+**El front muestra pantallas vacías o «No se pudo conectar con el servidor»**
+Revisar `docker compose ps`: `api` tiene que estar healthy. Si se levantó la base desde
+cero, faltan `migrate` y `cargar_datos_iniciales`.
+
 **`mysql` no pasa a healthy**
 El primer arranque inicializa la base y bajo emulación puede tardar varios minutos. El
 `start_period` es de 60 s. Revisar con `docker compose logs -f mysql`.
@@ -310,12 +352,10 @@ a propósito: [ADR-0002](docs/adr/0002-proceso-controlador-separado.md).
 
 ## Próximos pasos
 
-1. **Diagrama de Clases** → desbloquea el modelo de dominio y las migraciones.
-2. **HAL de hardware** con driver simulado y driver GPIO tras la misma interfaz.
-3. **Lazo de control y E-Stop** en `controller/`, con el presupuesto de latencia medido
-   sobre la Pi real.
-4. **Consumer de telemetría** y el hook del front.
-5. **Endpoints que consume `src/mock/api.ts`**, contra el contrato de `/api/schema/`.
-6. **Confirmar con el CIOp si una red se caracteriza una sola vez.** De eso depende la
-   multiplicidad de `Espectro` y dónde cuelga `PicoDeAtenuacion`
-   ([ADR-0007](docs/adr/0007-telemetria-en-vivo-sin-persistencia.md)). 
+1. **HAL de hardware** con driver simulado y driver GPIO tras la misma interfaz (#21, #22).
+2. **Lazo de control y E-Stop** en `controller/`, con el presupuesto de latencia medido
+   sobre la Pi real (#23-#25, #28).
+3. **Canal WebSocket de telemetría** y el hook del front que reemplaza la simulación
+   (#26, #27, #29).
+4. **Confirmar con el CIOp** si una red se caracteriza una sola vez y en qué unidad se
+   expresa la potencia objetivo (mW en el front, W en el modelo).

@@ -5,13 +5,15 @@ pruebas no tocan la base, a proposito. Es la parte que mas se va a ajustar con
 el laboratorio y tiene que poder iterarse rapido.
 """
 
+from pathlib import Path
+
 import pytest
 
 from fabricacion.caracterizacion import (
     EspectroInvalidoError,
     detectar_minimos,
     leer_csv_osa,
-    verificar_grilla,
+    verificar_orden,
 )
 from fabricacion.models import PicoDeAtenuacion
 
@@ -72,36 +74,69 @@ def test_rechaza_un_archivo_sin_datos():
         leer_csv_osa("Wavelength,Level\nsin,datos")
 
 
-# ── Verificacion de la grilla ───────────────────────────────────────────────
+# ── Verificacion del orden ──────────────────────────────────────────────────
 
 
-def test_acepta_la_grilla_que_coincide_con_la_resolucion():
-    """El caso normal: el CSV vino con el paso que dice el procedimiento."""
-    puntos = [(1500.0 + i * 0.05, -1.0) for i in range(10)]
-    verificar_grilla(puntos, 0.05)  # no levanta
+def test_acepta_un_barrido_con_paso_variable():
+    """El OSA exporta diezmado: paso grueso en lo plano, fino en la resonancia.
 
-
-def test_tolera_el_redondeo_del_osa():
-    """El OSA redondea lo que exporta: el paso oscila levemente sin estar mal."""
-    puntos = [(1500.0, -1), (1500.0501, -1), (1500.0999, -1), (1500.1502, -1)]
-    verificar_grilla(puntos, 0.05)  # no levanta
-
-
-def test_rechaza_una_grilla_con_otro_paso():
-    """Es la salvaguarda que hace seguro no guardar las longitudes de onda.
-
-    Si se aceptara, el espectro reconstruiria lambda con el paso equivocado y la
-    caracterizacion quedaria corrida sin ningun aviso.
+    En M1 esto se rechazaba por no coincidir con la resolucion. Es exactamente
+    el formato del primer CSV real del laboratorio (ADR-0008).
     """
-    puntos = [(1500.0 + i * 0.1, -1.0) for i in range(10)]
-    with pytest.raises(EspectroInvalidoError, match="no coincide con la resolucion"):
-        verificar_grilla(puntos, 0.05)
+    verificar_orden([(1170.0, -3), (1180.0, -4), (1600.0, -2), (1601.0, -5), (1602.0, -7)])
 
 
 def test_rechaza_longitudes_de_onda_desordenadas():
-    """Un barrido que retrocede no es una grilla: no se puede reconstruir."""
+    """Un barrido que retrocede no es un barrido."""
     with pytest.raises(EspectroInvalidoError, match="crecientes"):
-        verificar_grilla([(1500.0, -1), (1500.1, -1), (1500.05, -1)], 0.05)
+        verificar_orden([(1500.0, -1), (1500.1, -1), (1500.05, -1)])
+
+
+def test_rechaza_longitudes_de_onda_repetidas():
+    """Dos lecturas en la misma longitud de onda no se pueden graficar ni comparar."""
+    with pytest.raises(EspectroInvalidoError):
+        verificar_orden([(1500.0, -1), (1500.0, -2)])
+
+
+# ── El archivo real del laboratorio ─────────────────────────────────────────
+
+CSV_REAL = Path(__file__).resolve().parent.parent / "comun" / "datos_ejemplo" / "L05LPG01.csv"
+
+
+def _leer_real():
+    """Lee el CSV real exportado por el Yokogawa AQ6370B."""
+    return leer_csv_osa(CSV_REAL.read_text(encoding="latin-1"))
+
+
+def test_el_csv_real_del_aq6370b_se_lee_completo():
+    """Es la prueba que importa: el archivo que exporta el equipo del laboratorio.
+
+    Trae un encabezado de 28 lineas con metadatos (CTRWL, SPAN, RESLN...) que no
+    tienen que colarse como puntos.
+    """
+    puntos = _leer_real()
+    assert len(puntos) == 117
+    assert puntos[0] == (1170.0, -3.188)
+    assert puntos[-1] == (1670.0, -2.253)
+
+
+def test_el_csv_real_tiene_paso_variable():
+    """Documenta por que se cayo la reconstruccion por grilla regular."""
+    puntos = _leer_real()
+    pasos = {round(b[0] - a[0], 4) for a, b in zip(puntos, puntos[1:], strict=False)}
+    assert pasos == {1.0, 2.0, 3.0, 5.0, 10.0}
+    verificar_orden(puntos)  # y aun asi es un barrido valido
+
+
+def test_en_el_csv_real_se_detectan_la_principal_y_la_secundaria():
+    """Las dos resonancias que el front muestra como lambda y lambda secundario.
+
+    La de 1200 nm cae en la zona de paso 10 nm y queda representada por un solo
+    punto: con el filtro de ancho de M1 (3 puntos) se perdia.
+    """
+    puntos = _leer_real()
+    indices = detectar_minimos([db for _, db in puntos])
+    assert [puntos[i] for i in indices] == [(1200.0, -6.675), (1610.0, -13.859)]
 
 
 # ── Deteccion de minimos ────────────────────────────────────────────────────
@@ -143,7 +178,11 @@ def test_un_valle_de_fondo_plano_se_cuenta_una_sola_vez():
 
 
 def test_un_pico_de_ruido_de_un_solo_punto_no_es_resonancia():
-    """Un solo punto bajo el umbral es ruido: una resonancia real abarca decenas."""
+    """Con grilla fina, el filtro opcional de ancho descarta el ruido de un punto.
+
+    Por defecto esta apagado (ADR-0008): en un CSV diezmado un punto puede ser
+    una resonancia real. Quien trabaja con barridos finos lo activa.
+    """
     datos = [-1.0] * 100
     datos[50] = -30.0
     assert detectar_minimos(datos, ancho_minimo=3) == []
@@ -179,11 +218,34 @@ def test_importar_crea_el_espectro_sin_guardar_las_lambdas(red, procedimiento):
 
 
 @pytest.mark.django_db
-def test_importar_rechaza_un_csv_de_otro_procedimiento(red, procedimiento):
-    """Elegir mal el procedimiento corromperia la grilla: se rechaza."""
-    puntos = [(1500.0 + i * 0.2, -1.0) for i in range(10)]
+def test_importar_el_csv_real_guarda_el_eje_tal_cual(red, procedimiento):
+    """El dato guardado es exactamente el que exporto el instrumento."""
+    espectro = procedimiento.importar(red, CSV_REAL.read_text(encoding="latin-1"))
+
+    assert espectro.cantidad_de_puntos == 117
+    assert espectro.longitudes_de_onda()[:3] == [1170.0, 1180.0, 1190.0]
+    assert espectro.longitudes_de_onda()[-3:] == [1668.0, 1669.0, 1670.0]
+
+    espectro.detectar_resonancias()
+    principal = red.resonancia_principal()
+    assert (principal.longitud_onda, principal.transmitancia) == (1610.0, -13.859)
+
+
+@pytest.mark.django_db
+def test_importar_dos_veces_reemplaza_el_espectro(red, procedimiento):
+    """Reimportar un CSV corregido no puede chocar contra el espectro anterior."""
+    procedimiento.importar(red, _csv([(1500.0, -1.0), (1500.1, -2.0)]))
+    procedimiento.importar(red, _csv([(1600.0, -5.0), (1600.5, -6.0), (1601.0, -7.0)]))
+
+    red.refresh_from_db()
+    assert red.espectro.cantidad_de_puntos == 3
+
+
+@pytest.mark.django_db
+def test_importar_rechaza_un_csv_desordenado(red, procedimiento):
+    """Lo unico que se exige ahora es que sea un barrido."""
     with pytest.raises(EspectroInvalidoError):
-        procedimiento.importar(red, _csv(puntos))
+        procedimiento.importar(red, _csv([(1500.0, -1.0), (1499.0, -2.0)]))
 
 
 @pytest.mark.django_db

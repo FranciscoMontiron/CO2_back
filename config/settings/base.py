@@ -5,6 +5,7 @@ Las decisiones que explican esta configuracion estan documentadas en
 tiene el porque.
 """
 
+from datetime import timedelta
 from pathlib import Path
 
 import environ
@@ -164,6 +165,14 @@ REST_FRAMEWORK = {
     ],
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
     "DEFAULT_RENDERER_CLASSES": ["rest_framework.renderers.JSONRenderer"],
+}
+
+# Vida de los tokens pensada para un turno de laboratorio: el de acceso dura
+# media hora y el front lo renueva solo; el de refresco dura un turno largo, y al
+# vencer obliga a volver a iniciar sesion.
+SIMPLE_JWT = {
+    "ACCESS_TOKEN_LIFETIME": timedelta(minutes=30),
+    "REFRESH_TOKEN_LIFETIME": timedelta(hours=12),
 }
 
 SPECTACULAR_SETTINGS = {

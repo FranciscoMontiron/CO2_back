@@ -64,9 +64,9 @@ class Procedimiento(models.Model):
     def importar(self, red: Red, contenido_csv: str, fecha_captura=None) -> Espectro:
         """Crea el espectro de una red a partir del CSV exportado por el OSA.
 
-        Antes de guardar verifica que el paso del CSV coincida con la resolucion
-        de esta receta: el espectro reconstruye las longitudes de onda con ese
-        paso, y si no coincidieran quedarian equivocadas sin ningun aviso.
+        Se guardan las longitudes de onda tal como vienen: el OSA puede exportar
+        el barrido diezmado con paso variable, asi que no se asume grilla
+        regular (ADR-0008). Si la red ya tenia espectro, se reemplaza.
 
         Args:
             red: La red caracterizada.
@@ -74,25 +74,28 @@ class Procedimiento(models.Model):
             fecha_captura: Cuando se midio. Por defecto, ahora.
 
         Returns:
-            El :class:`Espectro` creado.
+            El :class:`Espectro` creado o actualizado.
 
         Raises:
-            EspectroInvalidoError: Si el CSV no es legible o su grilla no coincide con
-                esta receta.
+            EspectroInvalidoError: Si el CSV no es legible o sus longitudes de onda
+                no son estrictamente crecientes.
         """
         from django.utils import timezone
 
-        from .caracterizacion import leer_csv_osa, verificar_grilla
+        from .caracterizacion import leer_csv_osa, verificar_orden
 
         puntos = leer_csv_osa(contenido_csv)
-        verificar_grilla(puntos, self.resolucion)
-        return Espectro.objects.create(
+        verificar_orden(puntos)
+        espectro, _ = Espectro.objects.update_or_create(
             red=red,
-            procedimiento=self,
-            fecha_captura=fecha_captura or timezone.now(),
-            longitud_onda_inicial=puntos[0][0],
-            transmitancias=[db for _, db in puntos],
+            defaults={
+                "procedimiento": self,
+                "fecha_captura": fecha_captura or timezone.now(),
+                "longitudes_onda": [nm for nm, _ in puntos],
+                "transmitancias": [db for _, db in puntos],
+            },
         )
+        return espectro
 
 
 class Lote(models.Model):
@@ -250,9 +253,11 @@ class Marca(models.Model):
 class Espectro(models.Model):
     """Captura cruda del OSA para una red.
 
-    **No se guardan las longitudes de onda.** El OSA barre en grilla regular, asi
-    que ``lambda_i = longitud_onda_inicial + i * procedimiento.resolucion``. Es
-    exacto, no una aproximacion, y ahorra la mitad del volumen.
+    Guarda las longitudes de onda **y** las transmitancias, como dos arreglos
+    paralelos. En M1 se guardaba solo la longitud inicial y se reconstruia el eje
+    asumiendo grilla regular; el primer CSV real del laboratorio (un Yokogawa
+    AQ6370B) vino diezmado con cinco pasos distintos, de 1 a 10 nm, y ese supuesto
+    se cayo. Ver ADR-0008.
 
     Es ``OneToOne`` con ``Red`` porque se asumio que cada red se caracteriza una
     sola vez. Si el laboratorio vuelve a medir redes viejas, pasar a varias
@@ -271,7 +276,7 @@ class Espectro(models.Model):
         related_name="espectros",
     )
     fecha_captura = models.DateTimeField("fecha de captura")
-    longitud_onda_inicial = models.FloatField("longitud de onda inicial [nm]")
+    longitudes_onda = models.JSONField("longitudes de onda [nm]", default=list)
     transmitancias = models.JSONField("transmitancias [dB]", default=list)
 
     class Meta:
@@ -290,15 +295,18 @@ class Espectro(models.Model):
         """Cantidad de muestras del barrido."""
         return len(self.transmitancias)
 
+    @property
+    def longitud_onda_inicial(self) -> float | None:
+        """Primera longitud de onda del barrido, o ``None`` si esta vacio."""
+        return self.longitudes_onda[0] if self.longitudes_onda else None
+
     def longitudes_de_onda(self) -> list[float]:
-        """Reconstruye el eje de longitudes de onda.
+        """Devuelve el eje de longitudes de onda tal como lo exporto el OSA.
 
         Returns:
-            La grilla ``inicial + i * resolucion``, del mismo largo que
-            ``transmitancias``.
+            Las longitudes de onda en nm, del mismo largo que ``transmitancias``.
         """
-        paso = self.procedimiento.resolucion
-        return [self.longitud_onda_inicial + i * paso for i in range(len(self.transmitancias))]
+        return list(self.longitudes_onda)
 
     def puntos(self) -> list[tuple[float, float]]:
         """Devuelve el espectro como pares (longitud de onda, transmitancia).
@@ -310,7 +318,7 @@ class Espectro(models.Model):
 
     @transaction.atomic
     def detectar_resonancias(
-        self, profundidad_minima: float = 3.0, ancho_minimo: int = 3
+        self, profundidad_minima: float = 3.0, ancho_minimo: int = 1
     ) -> list[PicoDeAtenuacion]:
         """Detecta las resonancias del espectro y las asienta en la red.
 

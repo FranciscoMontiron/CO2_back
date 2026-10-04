@@ -16,6 +16,7 @@ sobrevivir a los cambios de opinión.
 | [0005](0005-simulacion-arm64-qemu.md) | Simulación de la Pi 5 sobre arm64 emulado | Aceptada |
 | [0006](0006-almacenamiento-nvme-retencion.md) | Arranque desde NVMe y política de retención de telemetría | ~~Reemplazada~~ por [0007](0007-telemetria-en-vivo-sin-persistencia.md) |
 | [0007](0007-telemetria-en-vivo-sin-persistencia.md) | La telemetría es efímera: se transmite, no se persiste | Aceptada |
+| [0008](0008-espectro-guarda-longitudes-de-onda.md) | El espectro guarda sus longitudes de onda | Aceptada (reemplaza la decisión 5 de 0007) |
 
 ## Estados
 

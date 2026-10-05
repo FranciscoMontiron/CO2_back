@@ -77,9 +77,4 @@ omit = [
     "config/wsgi.py",
     "config/asgi.py",
     "manage.py",
-    # TEMPORAL: el controlador es un esqueleto sin logica que testear, y
-    # contarlo hundiria la cobertura por debajo del 70% de RNF007 sin que eso
-    # signifique nada. QUITAR esta linea junto con el commit que traiga el lazo
-    # de control: esa logica no puede entrar sin tests.
-    "controller/main.py",
 ]

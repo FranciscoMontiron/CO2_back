@@ -152,6 +152,9 @@ CACHES = {
 # SIN CONEXION AL CONTROLADOR en vez de telemetria congelada.
 CONTROLLER_HEARTBEAT_TTL = env.int("CONTROLLER_HEARTBEAT_TTL", default=3)
 CONTROLLER_HEARTBEAT_KEY = "controller:heartbeat"
+# Con el HAL simulado la API ademas permite inyectar fallas para probar la
+# respuesta del sistema. Con hardware real esa puerta queda cerrada.
+CONTROLLER_HAL = env("CONTROLLER_HAL", default="simulado")
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  API

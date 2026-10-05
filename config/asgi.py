@@ -17,17 +17,22 @@ os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.dev")
 
 django_asgi_app = get_asgi_application()
 
-# Los consumers se agregan cuando se cierre el Diagrama de Clases v4. La
-# superficie asincrona del sistema tiene que caber en esta lista: si crece
+# Se importa despues de inicializar Django: el consumer usa modelos y settings.
+from django.urls import path  # noqa: E402
+
+from operacion.consumers import TelemetriaConsumer  # noqa: E402
+
+# La superficie asincrona del sistema tiene que caber en esta lista: si crece
 # mucho, el split de ADR-0003 dejo de cumplir su proposito.
-websocket_urlpatterns: list = []
+websocket_urlpatterns = [
+    path("ws/telemetria/", TelemetriaConsumer.as_asgi()),
+]
 
 application = ProtocolTypeRouter(
     {
         "http": django_asgi_app,
-        # TODO(ADR-0003): envolver en AuthMiddlewareStack + middleware propio de
-        # JWT por query-string. El browser no permite headers en el handshake
-        # de WebSocket, asi que la autenticacion no puede reusar la de DRF.
+        # La autenticacion la resuelve el consumer con el JWT de la query
+        # string: el browser no permite headers en el handshake de WebSocket.
         "websocket": URLRouter(websocket_urlpatterns),
     }
 )

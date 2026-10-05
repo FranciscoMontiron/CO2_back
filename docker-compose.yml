@@ -147,6 +147,34 @@ services:
         limits: { cpus: "0.5", memory: 768M }
     networks: [co2net]
 
+  # ── Servicio de eventos: persiste lo que informa el controlador (ADR-0009) ─
+  #   Misma imagen que `api`. El controlador no toca MySQL: emite marcas,
+  #   checkpoints, alertas y emergencias a un stream de Redis, y este proceso
+  #   los guarda. Tambien le publica al controlador los umbrales vigentes.
+  eventos:
+    <<: [*platform, *logging]
+    build:
+      context: .
+      dockerfile: docker/api/Dockerfile
+      target: runtime
+    restart: unless-stopped
+    command: python manage.py escuchar_controlador
+    env_file: [.env]
+    depends_on:
+      mysql: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    healthcheck:
+      # El proceso toca el archivo en cada vuelta del bucle (como mucho cada 2 s).
+      test: ["CMD-SHELL", "test $$(( $$(date +%s) - $$(stat -c %Y /tmp/eventos.alive) )) -lt 30"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    deploy:
+      resources:
+        limits: { cpus: "0.25", memory: 256M }
+    networks: [co2net]
+
   # ── Lazo de control y E-Stop — dueño exclusivo del GPIO (ADR-0002) ────────
   #   Django NO accede al hardware. Nunca. Ni para leer.
   controller:

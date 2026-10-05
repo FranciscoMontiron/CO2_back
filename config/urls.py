@@ -12,7 +12,14 @@ from rest_framework.routers import DefaultRouter
 from rest_framework_simplejwt.views import TokenRefreshView
 
 from config.health import healthz
-from operacion.views import AlertaViewSet, EventoEmergenciaViewSet, UmbralViewSet
+from operacion.views import (
+    AlertaViewSet,
+    ControlComandoView,
+    ControlEstadoView,
+    ControlIniciarView,
+    EventoEmergenciaViewSet,
+    UmbralViewSet,
+)
 from programas.views import ProgramaViewSet
 from trazabilidad.views import EnsayoViewSet
 from usuarios.views import AuditoriaViewSet, IniciarSesionView, UsuarioViewSet, YoView
@@ -32,6 +39,10 @@ urlpatterns = [
     path("api/auth/token/", IniciarSesionView.as_view(), name="token"),
     path("api/auth/token/refresh/", TokenRefreshView.as_view(), name="token-refresh"),
     path("api/auth/yo/", YoView.as_view(), name="yo"),
+    # Control del arreglo: la API encola comandos, el controlador los ejecuta.
+    path("api/control/estado/", ControlEstadoView.as_view(), name="control-estado"),
+    path("api/control/comandos/", ControlComandoView.as_view(), name="control-comandos"),
+    path("api/control/iniciar/", ControlIniciarView.as_view(), name="control-iniciar"),
     path("api/", include(router.urls)),
     # Contrato de la API: es lo que el front consume en `src/api/`.
     path("api/schema/", SpectacularAPIView.as_view(), name="schema"),

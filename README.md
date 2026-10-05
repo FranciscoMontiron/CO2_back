@@ -10,23 +10,21 @@ con la capa de API aislada en `src/mock/api.ts` lista para conectar.
 
 ## Estado actual
 
-> **Back y front integrados.** Con un `docker compose up` se ve el sistema completo en
-> `https://localhost:8443`: login, historial de ensayos, detalle con el espectro real del
-> OSA, programas, alertas y administración.
+> **El circuito completo funciona contra un laboratorio simulado.** Desde la interfaz se
+> arma el equipo paso a paso, se ejecuta un programa en tiempo real con telemetría en vivo,
+> y el ensayo queda guardado con su red caracterizada. Las fallas provocadas disparan la
+> parada de emergencia sola. Ver [Simular el laboratorio](#simular-el-laboratorio).
 
 | | |
 |---|---|
-| ✅ | Infra: 7 contenedores `linux/arm64` con límites que espejan la Pi 5, front incluido |
+| ✅ | Infra: 8 contenedores `linux/arm64` con límites que espejan la Pi 5, front incluido |
 | ✅ | Modelo de dominio completo (M1), con auditoría automática (RN010) |
 | ✅ | API REST con sesión JWT y permisos por rol — contrato en `/api/docs/` |
-| ✅ | Front conectado: todo lo que muestra sale de la API, salvo lo que se indica abajo |
-| ✅ | Decisiones de arquitectura en [`docs/adr/`](docs/adr/) |
-| ⏳ | **Simulado en el front:** telemetría en vivo, E-Stop y el procedimiento de «Nuevo ensayo» |
-| ⏳ | Lazo de control, HAL de hardware y E-Stop real (M3/M4) |
-| ⏳ | Canal WebSocket de telemetría (M4) |
-
-Lo simulado depende del proceso controlador, que todavía solo publica su heartbeat. El
-indicador de conexión del front sí es real: consulta `/api/healthz/`.
+| ✅ | Controlador: máquina de estados, ejecución de programas, umbrales y E-Stop de software |
+| ✅ | Telemetría en vivo a 1 Hz por WebSocket (RF009), con detección de datos congelados |
+| ✅ | Servicio de eventos que persiste marcas, checkpoints, alertas y emergencias ([ADR-0009](docs/adr/0009-protocolo-del-bus-y-servicio-de-eventos.md)) |
+| ⏳ | **HAL de GPIO para la Pi 5** (#22): hoy el hardware es un modelo físico simulado |
+| ⏳ | Medición de RNF001 sobre la Pi real (#31) |
 
 ---
 
@@ -164,7 +162,7 @@ fuente para `aarch64`. Es esperable, y es justamente el hallazgo que
 ### Verificación
 
 ```bash
-docker compose ps                                   # los 7 servicios healthy
+docker compose ps                                   # los 8 servicios healthy
 curl -k https://localhost:8443/api/healthz/         # estado de dependencias
 ```
 
@@ -212,6 +210,78 @@ levantado.
 
 ---
 
+## Simular el laboratorio
+
+Con `CONTROLLER_HAL=simulado` (el valor por defecto), el controlador maneja un **modelo
+físico del arreglo** en lugar de los GPIO de la Pi: el agua tarda en enfriarse, la alta
+tensión sube en rampa, el motor se desplaza a 2 mm/s, la fibra tarda unos segundos en
+alinearse. Al terminar un programa, el interrogador óptico simulado mide el espectro de la
+red a partir de la física de una LPG: la resonancia cae en `λ = Δn × período` y se hace más
+profunda con más marcas. Todo lo demás —API, eventos, base, WebSocket, front— es el sistema
+real.
+
+### Un ensayo de principio a fin, desde la interfaz
+
+1. Levantar el stack y cargar los datos de demo (ver [Puesta en marcha](#puesta-en-marcha)).
+2. Entrar a `https://localhost:8443` como `operador` / `operador`.
+3. Ir a **Nuevo ensayo** y seguir los 9 pasos. Cada uno tiene su botón de acción, y el
+   estado del hardware y las validaciones que puede confirmar un sensor se actualizan solos:
+
+   | Paso | Acción | Qué se ve |
+   |---|---|---|
+   | 2. Refrigeración | *Encender refrigeración* | El caudal sube y el agua se estabiliza (~1,5 s) |
+   | 4. Alta tensión | *Habilitar alta tensión* | Rampa hasta ~18 kV (~2,5 s). Sin refrigeración, se rechaza |
+   | 5. Sensor de sombra | *Alinear fibra* | La lectura baja de 2,4 a 0,12 mW (~3,5 s) |
+   | 6. Shutter | *Armar shutter* | El sistema pasa a **LISTO** solo, al cumplirse las 4 condiciones |
+   | 7. Láser y lazo | *Encender láser y cerrar lazo* | Solo se puede con el sistema LISTO (RN003) |
+   | 8. Loop de grabado | *Iniciar grabado* | Pulso a pulso en tiempo real: el Programa A son 18 pulsos en ~12 s |
+   | 9. Finalización | *Apagar en orden inverso* | Vuelve a **REPOSO** |
+
+   Las validaciones que no puede confirmar un sensor (por ejemplo, el interlock físico de
+   la fuente) las tilda el operador, como en el laboratorio.
+4. Al terminar el paso 8 aparece el ensayo con su resultado y un enlace a su detalle: la
+   curva del espectro, las marcas grabadas y la resonancia detectada.
+
+Durante el grabado, **Telemetría** muestra los valores en vivo, y en el historial el ensayo
+figura `En curso` hasta que termina.
+
+### Probar la seguridad
+
+- **E-Stop:** el botón rojo de la barra superior. El sistema apaga shutter, láser y alta
+  tensión en ese orden, y el aviso muestra el tiempo de respuesta. *Rearmar sistema* lo
+  devuelve a reposo; el rearme es siempre manual.
+- **Fallas:** en **Control manual → Simulación de fallas**.
+  - *Pérdida de caudal* con la alta tensión habilitada: la parada salta sola en ~2 s.
+  - *Sobretemperatura* durante un grabado: el agua cruza 28 °C en ~7 s y el ensayo queda
+    `Interrumpido`.
+
+  Las dos quedan asentadas en **Alertas / Eventos**, con la alerta, la sugerencia de qué
+  revisar y el tiempo de respuesta contra los 500 ms de RNF001.
+- **Sin controlador:** `docker compose stop controller`. En menos de 4 s el front muestra
+  **SIN CONEXIÓN AL CONTROLADOR** y bloquea los comandos. `docker compose start controller`
+  lo recupera solo.
+
+### Lo mismo, sin navegador
+
+```bash
+python scripts/simular_ensayo.py
+python scripts/simular_ensayo.py --programa PRG-003 --falla sobretemperatura
+```
+
+Arma el equipo, graba, muestra la telemetría pulso a pulso y el ensayo resultante. Sirve para
+una demo rápida y para verificar que el circuito anda después de un cambio.
+
+### Para tener en cuenta
+
+- El tiempo es **real**, como en el laboratorio. Para demos con programas largos,
+  `CONTROLLER_SIM_VELOCIDAD=10` en `.env` acelera la simulación diez veces.
+- Los tiempos de respuesta (~55 ms) son de la simulación. **RNF001 se mide sobre la Pi real**
+  ([ADR-0005](docs/adr/0005-simulacion-arm64-qemu.md)).
+- Que una red salga inviable puede ser física, no un error: con el Programa C (600 µm) la
+  resonancia principal cae en ~1752 nm, fuera de la ventana del OSA (1170–1670 nm).
+
+---
+
 ## Servicios
 
 | Servicio | Imagen / base | CPU | RAM | Rol |
@@ -220,11 +290,12 @@ levantado.
 | `front` | nginx 1.27-alpine | 0.25 | 64 MB | Estáticos de la SPA de React (repo `CO2_front`) |
 | `api` | python 3.12-slim | 1.0 | 1 GB | gunicorn/WSGI — REST síncrona |
 | `ws` | *(misma imagen)* | 0.5 | 768 MB | daphne/ASGI — canal WebSocket |
-| `controller` | python 3.12-slim | 1.0 | 512 MB | Lazo de control, E-Stop, GPIO |
+| `controller` | python 3.12-slim | 1.0 | 512 MB | Lazo de control, E-Stop, HAL (simulado o GPIO) |
+| `eventos` | *(imagen de `api`)* | 0.25 | 256 MB | Persiste los eventos del controlador ([ADR-0009](docs/adr/0009-protocolo-del-bus-y-servicio-de-eventos.md)) |
 | `mysql` | mysql 8.4 | 1.0 | 2 GB | Persistencia (RNF008) |
 | `redis` | redis 7.4-alpine | 0.25 | 256 MB | Bus único (ADR-0004) |
 
-Total: **4,25 CPU / ~4,7 GB**, dentro del presupuesto de una Pi 5 de 8 GB.
+Total: **4,5 CPU / ~5 GB**, dentro del presupuesto de una Pi 5 de 8 GB.
 
 `api` y `ws` comparten la misma imagen y cambian solo el comando: la separación de
 [ADR-0003](docs/adr/0003-telemetria-websocket-split-wsgi-asgi.md) es de **proceso**,
@@ -298,13 +369,14 @@ front usa rutas relativas igual que detrás del proxy de Vite.
 - **Sesión** — JWT. El token de acceso dura 30 min y el front lo renueva solo; el de
   refresco dura 12 h. Van en `sessionStorage`: la PC del laboratorio es compartida y
   cerrar el navegador tiene que cerrar la sesión.
-- **Telemetría** — sigue simulada en `src/context/SystemContext.tsx`. Cuando exista el
-  canal WebSocket, se reemplaza el `setInterval` por un hook y el resto de la app no se
-  entera del transporte ([ADR-0003](docs/adr/0003-telemetria-websocket-split-wsgi-asgi.md)).
+- **Telemetría** — `src/hooks/useTelemetriaControlador.ts`, por WebSocket en `/ws/telemetria/`
+  ([ADR-0003](docs/adr/0003-telemetria-websocket-split-wsgi-asgi.md)). El JWT viaja en la
+  query string porque el navegador no permite headers en el handshake. Se reconecta sola.
+- **Comandos** — `src/api/control.ts`, por la API REST, que los valida y los audita. El
+  resultado no vuelve en la respuesta: se ve en la telemetría.
 
-Cuando el controlador esté caído (heartbeat vencido), el front lo muestra en la barra
-lateral. Al conectar los comandos reales, además tiene que **bloquearlos** — nunca
-telemetría congelada como si fuera actual.
+Si la telemetría deja de llegar por más de 3,5 s, el front muestra **SIN CONEXIÓN AL
+CONTROLADOR** y bloquea los comandos — nunca telemetría congelada como si fuera actual.
 
 ---
 
@@ -352,10 +424,9 @@ a propósito: [ADR-0002](docs/adr/0002-proceso-controlador-separado.md).
 
 ## Próximos pasos
 
-1. **HAL de hardware** con driver simulado y driver GPIO tras la misma interfaz (#21, #22).
-2. **Lazo de control y E-Stop** en `controller/`, con el presupuesto de latencia medido
-   sobre la Pi real (#23-#25, #28).
-3. **Canal WebSocket de telemetría** y el hook del front que reemplaza la simulación
-   (#26, #27, #29).
+1. **HAL de GPIO para la Pi 5** (#22), detrás de la misma interfaz que el simulado.
+2. **Medir RNF001 sobre la Pi real** (#31), con el E-Stop de punta a punta.
+3. **Ajustar el simulador con datos del laboratorio**: tiempos de estabilización, Δn
+   efectivo de los modos y criterio de viabilidad (hoy, ≥ 5 dB de profundidad).
 4. **Confirmar con el CIOp** si una red se caracteriza una sola vez y en qué unidad se
    expresa la potencia objetivo (mW en el front, W en el modelo).

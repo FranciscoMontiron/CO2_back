@@ -54,12 +54,16 @@ def test_el_administrador_recibe_todos_los_permisos():
 def test_la_carga_es_idempotente():
     """Correrla dos veces no puede duplicar nada: se corre en cada despliegue."""
     _cargar("--con-ejemplo")
+    conteos = (Rol.objects.count(), Red.objects.count(), RegistroDeFabricacion.objects.count())
     _cargar("--con-ejemplo")
 
-    assert Rol.objects.count() == 3
     assert Configuracion.objects.count() == 1
-    assert Red.objects.count() == 1
-    assert RegistroDeFabricacion.objects.count() == 1
+    assert (
+        Rol.objects.count(),
+        Red.objects.count(),
+        RegistroDeFabricacion.objects.count(),
+    ) == conteos
+    assert RegistroDeFabricacion.objects.count() == 6
 
 
 @pytest.mark.django_db
@@ -67,14 +71,32 @@ def test_el_ejemplo_respeta_el_invariante_de_longitud():
     """Es la prueba de punta a punta de la cadena derivada.
 
     `Red.longitud` llega al perfil de periodo pasando por la corrida y el
-    programa: 40 marcas a 500 um tienen que dar 20 mm.
+    programa: el Programa A son 10 mm a 550 um, o sea 18 marcas, que dan 9,9 mm.
     """
     _cargar("--con-ejemplo")
-    red = Red.objects.get()
+    red = RegistroDeFabricacion.objects.get(codigo="ENS-2026-00001").red
 
-    assert red.cantidad_marcas == 40
-    assert red.longitud == pytest.approx(20.0)
-    assert red.resonancia_principal() is not None
+    assert red.cantidad_marcas == 18
+    assert red.longitud == pytest.approx(9.9)
+
+
+@pytest.mark.django_db
+def test_el_ejemplo_usa_el_csv_real_del_laboratorio():
+    """El lote 5, red 1 es el L05LPG01.csv: tiene que tener sus dos resonancias."""
+    _cargar("--con-ejemplo")
+    red = RegistroDeFabricacion.objects.get(codigo="ENS-2026-00001").red
+    picos = sorted((p.longitud_onda, p.principal) for p in red.picos.all())
+
+    assert red.espectro.cantidad_de_puntos == 117
+    assert picos == [(1200.0, False), (1610.0, True)]
+
+
+@pytest.mark.django_db
+def test_el_ejemplo_crea_un_usuario_por_rol_que_puede_entrar():
+    """Sin usuarios para iniciar sesion, la demo del front no arranca."""
+    _cargar("--con-ejemplo")
+    for username in ("admin", "investigador", "operador"):
+        assert Usuario.objects.get(username=username).check_password(username)
 
 
 @pytest.mark.django_db

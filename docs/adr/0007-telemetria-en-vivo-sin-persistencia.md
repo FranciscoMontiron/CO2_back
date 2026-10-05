@@ -85,6 +85,11 @@ de armado, no como rango.
 
 ### 5. `Espectro` pasa a ser una clase, y el volumen deja de estar en la fila de `Red`
 
+> **Parcialmente reemplazada por [ADR-0008](0008-espectro-guarda-longitudes-de-onda.md).**
+> Que `Espectro` sea una clase en tabla propia sigue vigente. Lo que cambió es que
+> ahora **sí guarda las longitudes de onda**: el primer CSV real del laboratorio vino
+> con paso variable y la reconstrucción por grilla regular de abajo quedó inválida.
+
 Sacada la telemetría, el volumen dominante pasa a ser el espectro del OSA. Hoy vive
 como `Red.espectro: String`, y eso tiene dos problemas: uno de modelado y uno de
 rendimiento.

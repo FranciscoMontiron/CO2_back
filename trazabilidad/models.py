@@ -141,6 +141,17 @@ class RegistroDeFabricacion(models.Model):
         self.observaciones = f"{self.observaciones}\nInterrumpido: {motivo}".strip()
         self.save(update_fields=["estado", "fin", "observaciones"])
 
+    def abortar(self, motivo: str) -> None:
+        """Marca la corrida como abortada: se corto por una decision, no por una falla.
+
+        Args:
+            motivo: Por que se aborto.
+        """
+        self.estado = EstadoEjecucion.ABORTADO
+        self.fin = timezone.now()
+        self.observaciones = f"{self.observaciones}\nAbortado: {motivo}".strip()
+        self.save(update_fields=["estado", "fin", "observaciones"])
+
     def finalizar(self) -> None:
         """Marca la corrida como completada."""
         self.estado = EstadoEjecucion.COMPLETADO

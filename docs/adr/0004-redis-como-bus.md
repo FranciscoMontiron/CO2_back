@@ -54,6 +54,10 @@ cambia es la seguridad — el interlock de hardware no pasa por acá (ADR-0002).
   de ese intervalo. Es correcto para telemetría (el dato viejo no sirve) e **incorrecto
   para comandos y alarmas**, que necesitan confirmación por otra vía.
 
+> **Resuelto en [ADR-0009](0009-protocolo-del-bus-y-servicio-de-eventos.md):** los comandos
+> y los eventos viajan por **streams** de Redis, que conservan el mensaje hasta que se lee.
+> El pub/sub queda solo para la telemetría.
+
 ## Alternativas descartadas
 
 - **ZeroMQ / nanomsg.** Menor latencia, pero no sirve como channel layer de Channels:

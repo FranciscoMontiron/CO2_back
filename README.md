@@ -10,21 +10,21 @@ con la capa de API aislada en `src/mock/api.ts` lista para conectar.
 
 ## Estado actual
 
-> **Esta entrega es infraestructura y decisiones. No hay lógica de dominio todavía.**
+> **El circuito completo funciona contra un laboratorio simulado.** Desde la interfaz se
+> arma el equipo paso a paso, se ejecuta un programa en tiempo real con telemetría en vivo,
+> y el ensayo queda guardado con su red caracterizada. Las fallas provocadas disparan la
+> parada de emergencia sola. Ver [Simular el laboratorio](#simular-el-laboratorio).
 
 | | |
 |---|---|
-| ✅ | Infra completa: 6 contenedores `linux/arm64` con límites que espejan la Pi 5 |
-| ✅ | Django + DRF arrancando, con `/api/healthz/` verificando MySQL, Redis y el controlador |
-| ✅ | Terminación TLS y ruteo del split WSGI/ASGI en nginx |
-| ✅ | Esqueleto del proceso controlador publicando heartbeat |
-| ✅ | Decisiones de arquitectura documentadas en [`docs/adr/`](docs/adr/) |
-| ⏳ | Modelo de dominio — **espera el Diagrama de Clases v4** |
-| ⏳ | Lazo de control, HAL de hardware y E-Stop |
-| ⏳ | Consumer de telemetría y endpoints que consume el front |
-
-El modelo de dominio se dejó fuera a propósito: depende del diagrama de clases v4.
-Escribirlo ahora contra una suposición significa reescribirlo después.
+| ✅ | Infra: 8 contenedores `linux/arm64` con límites que espejan la Pi 5, front incluido |
+| ✅ | Modelo de dominio completo (M1), con auditoría automática (RN010) |
+| ✅ | API REST con sesión JWT y permisos por rol — contrato en `/api/docs/` |
+| ✅ | Controlador: máquina de estados, ejecución de programas, umbrales y E-Stop de software |
+| ✅ | Telemetría en vivo a 1 Hz por WebSocket (RF009), con detección de datos congelados |
+| ✅ | Servicio de eventos que persiste marcas, checkpoints, alertas y emergencias ([ADR-0009](docs/adr/0009-protocolo-del-bus-y-servicio-de-eventos.md)) |
+| ⏳ | **HAL de GPIO para la Pi 5** (#22): hoy el hardware es un modelo físico simulado |
+| ⏳ | Medición de RNF001 sobre la Pi real (#31) |
 
 ---
 
@@ -120,6 +120,8 @@ ya están escritos.
 ## Requisitos previos
 
 - **Docker Desktop corriendo** (no solo instalado — ver troubleshooting)
+- **El repo del front clonado al lado de este**: `../CO2_front`. El compose lo construye
+  desde ahí. Si está en otro lado, fijar `FRONT_DIR` en `.env`.
 - Git Bash u otro shell POSIX, para `gen-certs.sh`
 - Para desarrollo fuera de contenedores: Python 3.12+
 
@@ -128,7 +130,9 @@ ya están escritos.
 ## Puesta en marcha
 
 ```bash
+# Los dos repos, uno al lado del otro
 git clone https://github.com/FranciscoMontiron/CO2_back.git
+git clone https://github.com/Fedebravo12/CO2_front.git
 cd CO2_back
 
 # 1. Entorno. Editar .env y cambiar TODAS las contraseñas.
@@ -137,9 +141,19 @@ cp .env.example .env
 # 2. Certificado autofirmado para desarrollo (RNF003) (terminal bash)
 sh docker/nginx/gen-certs.sh
 
-# 3. Levantar la simulación arm64 de la Pi 5
+# 3. Levantar la simulación arm64 de la Pi 5 (back + front)
 docker compose up -d --build
+
+# 4. Base de datos y datos de demostración
+docker compose exec api python manage.py migrate
+docker compose exec api python manage.py cargar_datos_iniciales --con-ejemplo
 ```
+
+Abrir **https://localhost:8443** e ingresar con `admin`, `investigador` u `operador`
+(la contraseña es igual al usuario). Cada uno ve lo que su rol permite.
+
+> Los usuarios de demo los crea `--con-ejemplo`. **No usar esa opción en un despliegue
+> real**: las contraseñas son públicas.
 
 El primer build es **lento**: bajo emulación QEMU, `mysqlclient` se compila desde
 fuente para `aarch64`. Es esperable, y es justamente el hallazgo que
@@ -148,7 +162,7 @@ fuente para `aarch64`. Es esperable, y es justamente el hallazgo que
 ### Verificación
 
 ```bash
-docker compose ps                                   # los 6 servicios healthy
+docker compose ps                                   # los 8 servicios healthy
 curl -k https://localhost:8443/api/healthz/         # estado de dependencias
 ```
 
@@ -167,13 +181,14 @@ Respuesta esperada:
 
 | URL | Qué es |
 |---|---|
+| `https://localhost:8443/` | **El sistema** (front) |
 | `https://localhost:8443/api/healthz/` | Estado de las dependencias |
 | `https://localhost:8443/api/docs/` | Documentación interactiva de la API |
 | `https://localhost:8443/api/schema/` | OpenAPI en crudo — el contrato para el front |
 | `https://localhost:8443/admin/` | Admin de Django |
 
 El browser va a advertir que el certificado no es de confianza: es lo esperable en un
-autofirmado.
+autofirmado. Si un antivirus bloquea la página, ver troubleshooting.
 
 ### Desarrollo rápido (arquitectura nativa)
 
@@ -189,20 +204,98 @@ En PowerShell: `$env:TARGET_PLATFORM="linux/amd64"` antes, o fijarlo en `.env`.
 > Este modo **no valida compatibilidad arm64**. Antes de cerrar cada entrega hay que
 > correr la simulación arm64.
 
+Para el front con recarga en caliente, en el repo `CO2_front`: `npm run dev`. Vite sirve
+en `http://localhost:5173` y reenvía `/api` a este nginx, así que necesita el backend
+levantado.
+
+---
+
+## Simular el laboratorio
+
+Con `CONTROLLER_HAL=simulado` (el valor por defecto), el controlador maneja un **modelo
+físico del arreglo** en lugar de los GPIO de la Pi: el agua tarda en enfriarse, la alta
+tensión sube en rampa, el motor se desplaza a 2 mm/s, la fibra tarda unos segundos en
+alinearse. Al terminar un programa, el interrogador óptico simulado mide el espectro de la
+red a partir de la física de una LPG: la resonancia cae en `λ = Δn × período` y se hace más
+profunda con más marcas. Todo lo demás —API, eventos, base, WebSocket, front— es el sistema
+real.
+
+### Un ensayo de principio a fin, desde la interfaz
+
+1. Levantar el stack y cargar los datos de demo (ver [Puesta en marcha](#puesta-en-marcha)).
+2. Entrar a `https://localhost:8443` como `operador` / `operador`.
+3. Ir a **Nuevo ensayo** y seguir los 9 pasos. Cada uno tiene su botón de acción, y el
+   estado del hardware y las validaciones que puede confirmar un sensor se actualizan solos:
+
+   | Paso | Acción | Qué se ve |
+   |---|---|---|
+   | 2. Refrigeración | *Encender refrigeración* | El caudal sube y el agua se estabiliza (~1,5 s) |
+   | 4. Alta tensión | *Habilitar alta tensión* | Rampa hasta ~18 kV (~2,5 s). Sin refrigeración, se rechaza |
+   | 5. Sensor de sombra | *Alinear fibra* | La lectura baja de 2,4 a 0,12 mW (~3,5 s) |
+   | 6. Shutter | *Armar shutter* | El sistema pasa a **LISTO** solo, al cumplirse las 4 condiciones |
+   | 7. Láser y lazo | *Encender láser y cerrar lazo* | Solo se puede con el sistema LISTO (RN003) |
+   | 8. Loop de grabado | *Iniciar grabado* | Pulso a pulso en tiempo real: el Programa A son 18 pulsos en ~12 s |
+   | 9. Finalización | *Apagar en orden inverso* | Vuelve a **REPOSO** |
+
+   Las validaciones que no puede confirmar un sensor (por ejemplo, el interlock físico de
+   la fuente) las tilda el operador, como en el laboratorio.
+4. Al terminar el paso 8 aparece el ensayo con su resultado y un enlace a su detalle: la
+   curva del espectro, las marcas grabadas y la resonancia detectada.
+
+Durante el grabado, **Telemetría** muestra los valores en vivo, y en el historial el ensayo
+figura `En curso` hasta que termina.
+
+### Probar la seguridad
+
+- **E-Stop:** el botón rojo de la barra superior. El sistema apaga shutter, láser y alta
+  tensión en ese orden, y el aviso muestra el tiempo de respuesta. *Rearmar sistema* lo
+  devuelve a reposo; el rearme es siempre manual.
+- **Fallas:** en **Control manual → Simulación de fallas**.
+  - *Pérdida de caudal* con la alta tensión habilitada: la parada salta sola en ~2 s.
+  - *Sobretemperatura* durante un grabado: el agua cruza 28 °C en ~7 s y el ensayo queda
+    `Interrumpido`.
+
+  Las dos quedan asentadas en **Alertas / Eventos**, con la alerta, la sugerencia de qué
+  revisar y el tiempo de respuesta contra los 500 ms de RNF001.
+- **Sin controlador:** `docker compose stop controller`. En menos de 4 s el front muestra
+  **SIN CONEXIÓN AL CONTROLADOR** y bloquea los comandos. `docker compose start controller`
+  lo recupera solo.
+
+### Lo mismo, sin navegador
+
+```bash
+python scripts/simular_ensayo.py
+python scripts/simular_ensayo.py --programa PRG-003 --falla sobretemperatura
+```
+
+Arma el equipo, graba, muestra la telemetría pulso a pulso y el ensayo resultante. Sirve para
+una demo rápida y para verificar que el circuito anda después de un cambio.
+
+### Para tener en cuenta
+
+- El tiempo es **real**, como en el laboratorio. Para demos con programas largos,
+  `CONTROLLER_SIM_VELOCIDAD=10` en `.env` acelera la simulación diez veces.
+- Los tiempos de respuesta (~55 ms) son de la simulación. **RNF001 se mide sobre la Pi real**
+  ([ADR-0005](docs/adr/0005-simulacion-arm64-qemu.md)).
+- Que una red salga inviable puede ser física, no un error: con el Programa C (600 µm) la
+  resonancia principal cae en ~1752 nm, fuera de la ventana del OSA (1170–1670 nm).
+
 ---
 
 ## Servicios
 
 | Servicio | Imagen / base | CPU | RAM | Rol |
 |---|---|---|---|---|
-| `nginx` | nginx 1.27-alpine | 0.25 | 128 MB | TLS (RNF003), ruteo `/api` vs `/ws` |
+| `nginx` | nginx 1.27-alpine | 0.25 | 128 MB | TLS (RNF003), ruteo `/api`, `/ws`, `/admin` y front |
+| `front` | nginx 1.27-alpine | 0.25 | 64 MB | Estáticos de la SPA de React (repo `CO2_front`) |
 | `api` | python 3.12-slim | 1.0 | 1 GB | gunicorn/WSGI — REST síncrona |
 | `ws` | *(misma imagen)* | 0.5 | 768 MB | daphne/ASGI — canal WebSocket |
-| `controller` | python 3.12-slim | 1.0 | 512 MB | Lazo de control, E-Stop, GPIO |
+| `controller` | python 3.12-slim | 1.0 | 512 MB | Lazo de control, E-Stop, HAL (simulado o GPIO) |
+| `eventos` | *(imagen de `api`)* | 0.25 | 256 MB | Persiste los eventos del controlador ([ADR-0009](docs/adr/0009-protocolo-del-bus-y-servicio-de-eventos.md)) |
 | `mysql` | mysql 8.4 | 1.0 | 2 GB | Persistencia (RNF008) |
 | `redis` | redis 7.4-alpine | 0.25 | 256 MB | Bus único (ADR-0004) |
 
-Total: **4 CPU / ~4,6 GB**, dentro del presupuesto de una Pi 5 de 8 GB.
+Total: **4,5 CPU / ~5 GB**, dentro del presupuesto de una Pi 5 de 8 GB.
 
 `api` y `ws` comparten la misma imagen y cambian solo el comando: la separación de
 [ADR-0003](docs/adr/0003-telemetria-websocket-split-wsgi-asgi.md) es de **proceso**,
@@ -264,23 +357,26 @@ en una función pública **falla el lint**. Es la traducción literal de RNF007.
 
 ---
 
-## Conectar el front
+## Integración con el front
 
-El front tiene la capa de API aislada en `src/mock/api.ts` y el estado en vivo en
-`src/context/SystemContext.tsx`. La conexión se hace en dos lugares:
+El front vive en [`CO2_front`](https://github.com/Fedebravo12/CO2_front). El nginx de este
+repo lo sirve en `/` y la API en `/api/`, **desde el mismo origen**: no hay CORS, y el
+front usa rutas relativas igual que detrás del proxy de Vite.
 
-1. **REST** — reemplazar el cuerpo de las funciones de `src/mock/api.ts` por `fetch('/api/...')`,
-   manteniendo las mismas firmas. El contrato está en `/api/schema/`.
-2. **Telemetría** — un hook `useTelemetria()` que reemplaza el `setInterval` de
-   `SystemContext.tsx`. El resto de la app consume `telemetria` del contexto y no se
-   entera del transporte.
+- **Capa de API** — `src/api/client.ts` en el front. Traduce el contrato de este backend
+  (snake_case, fechas ISO, unidades en el nombre del campo) a los tipos que ya usaban las
+  pantallas. Si la API cambia, se toca ese archivo y no las páginas.
+- **Sesión** — JWT. El token de acceso dura 30 min y el front lo renueva solo; el de
+  refresco dura 12 h. Van en `sessionStorage`: la PC del laboratorio es compartida y
+  cerrar el navegador tiene que cerrar la sesión.
+- **Telemetría** — `src/hooks/useTelemetriaControlador.ts`, por WebSocket en `/ws/telemetria/`
+  ([ADR-0003](docs/adr/0003-telemetria-websocket-split-wsgi-asgi.md)). El JWT viaja en la
+  query string porque el navegador no permite headers en el handshake. Se reconecta sola.
+- **Comandos** — `src/api/control.ts`, por la API REST, que los valida y los audita. El
+  resultado no vuelve en la respuesta: se ve en la telemetría.
 
-Ese aislamiento es deliberado: es lo que hace que
-[la decisión de transporte sea reversible en ~1 día](docs/adr/0003-telemetria-websocket-split-wsgi-asgi.md).
-
-Cuando el controlador esté caído (heartbeat vencido), el front debe mostrar
-**SIN CONEXIÓN AL CONTROLADOR** y bloquear los comandos — nunca telemetría congelada
-como si fuera actual.
+Si la telemetría deja de llegar por más de 3,5 s, el front muestra **SIN CONEXIÓN AL
+CONTROLADOR** y bloquea los comandos — nunca telemetría congelada como si fuera actual.
 
 ---
 
@@ -298,6 +394,24 @@ en la etapa `builder` de `docker/api/Dockerfile`.
 **`nginx: [emerg] cannot load certificate`**
 Falta generar los certificados: `sh docker/nginx/gen-certs.sh`.
 
+**El antivirus bloquea `https://localhost:8443`** (por ejemplo, Kaspersky: *«Se evitó la
+visita a un sitio web no confiable»*)
+El antivirus intercepta el HTTPS y rechaza el certificado autofirmado. `curl -k` funciona
+porque no pasa por ese filtro. Dos salidas:
+- Aceptar el riesgo desde la página del antivirus, o agregar `localhost` a sus exclusiones.
+- Confiar en el certificado de desarrollo para tu usuario de Windows (PowerShell):
+  `certutil -addstore -user Root docker\nginx\certs\co2.crt`. Ojo: la clave privada queda
+  en el disco, así que conviene quitarlo cuando termines (`certmgr.msc` → *Entidades de
+  certificación raíz de confianza*).
+
+**`pytest` falla con `Access denied ... to database 'test_co2'`**
+El volumen de MySQL es anterior al script de `docker/mysql/initdb/`, que solo corre al
+inicializar un volumen vacío. `docker compose down -v` y volver a levantar (borra la base).
+
+**El front muestra pantallas vacías o «No se pudo conectar con el servidor»**
+Revisar `docker compose ps`: `api` tiene que estar healthy. Si se levantó la base desde
+cero, faltan `migrate` y `cargar_datos_iniciales`.
+
 **`mysql` no pasa a healthy**
 El primer arranque inicializa la base y bajo emulación puede tardar varios minutos. El
 `start_period` es de 60 s. Revisar con `docker compose logs -f mysql`.
@@ -310,12 +424,9 @@ a propósito: [ADR-0002](docs/adr/0002-proceso-controlador-separado.md).
 
 ## Próximos pasos
 
-1. **Diagrama de Clases** → desbloquea el modelo de dominio y las migraciones.
-2. **HAL de hardware** con driver simulado y driver GPIO tras la misma interfaz.
-3. **Lazo de control y E-Stop** en `controller/`, con el presupuesto de latencia medido
-   sobre la Pi real.
-4. **Consumer de telemetría** y el hook del front.
-5. **Endpoints que consume `src/mock/api.ts`**, contra el contrato de `/api/schema/`.
-6. **Confirmar con el CIOp si una red se caracteriza una sola vez.** De eso depende la
-   multiplicidad de `Espectro` y dónde cuelga `PicoDeAtenuacion`
-   ([ADR-0007](docs/adr/0007-telemetria-en-vivo-sin-persistencia.md)). 
+1. **HAL de GPIO para la Pi 5** (#22), detrás de la misma interfaz que el simulado.
+2. **Medir RNF001 sobre la Pi real** (#31), con el E-Stop de punta a punta.
+3. **Ajustar el simulador con datos del laboratorio**: tiempos de estabilización, Δn
+   efectivo de los modos y criterio de viabilidad (hoy, ≥ 5 dB de profundidad).
+4. **Confirmar con el CIOp** si una red se caracteriza una sola vez y en qué unidad se
+   expresa la potencia objetivo (mW en el front, W en el modelo).

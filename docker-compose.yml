@@ -147,6 +147,34 @@ services:
         limits: { cpus: "0.5", memory: 768M }
     networks: [co2net]
 
+  # ── Servicio de eventos: persiste lo que informa el controlador (ADR-0009) ─
+  #   Misma imagen que `api`. El controlador no toca MySQL: emite marcas,
+  #   checkpoints, alertas y emergencias a un stream de Redis, y este proceso
+  #   los guarda. Tambien le publica al controlador los umbrales vigentes.
+  eventos:
+    <<: [*platform, *logging]
+    build:
+      context: .
+      dockerfile: docker/api/Dockerfile
+      target: runtime
+    restart: unless-stopped
+    command: python manage.py escuchar_controlador
+    env_file: [.env]
+    depends_on:
+      mysql: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    healthcheck:
+      # El proceso toca el archivo en cada vuelta del bucle (como mucho cada 2 s).
+      test: ["CMD-SHELL", "test $$(( $$(date +%s) - $$(stat -c %Y /tmp/eventos.alive) )) -lt 30"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    deploy:
+      resources:
+        limits: { cpus: "0.25", memory: 256M }
+    networks: [co2net]
+
   # ── Lazo de control y E-Stop — dueño exclusivo del GPIO (ADR-0002) ────────
   #   Django NO accede al hardware. Nunca. Ni para leer.
   controller:
@@ -174,6 +202,27 @@ services:
     #   - /dev/gpiochip4:/dev/gpiochip4
     networks: [co2net]
 
+  # ── Front: SPA de React compilada y servida como estaticos ────────────────
+  #   Vive en su propio repo (CO2_front). Por defecto se espera clonado al lado
+  #   de este: `../CO2_front`. Si esta en otro lado, fijar FRONT_DIR en .env.
+  #   Para desarrollo con recarga en caliente conviene `npm run dev` en el repo
+  #   del front: Vite reenvia /api a este nginx (ver vite.config.ts de alla).
+  front:
+    <<: [*platform, *logging]
+    build:
+      context: ${FRONT_DIR:-../CO2_front}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1/"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    deploy:
+      resources:
+        limits: { cpus: "0.25", memory: 64M }
+    networks: [co2net]
+
   # ── Terminacion TLS (RNF003) y ruteo /api vs /ws ──────────────────────────
   nginx:
     <<: [*platform, *logging]
@@ -192,8 +241,9 @@ services:
       - ./docker/nginx/certs:/etc/nginx/certs:ro
       - static_files:/var/www/static:ro
     depends_on:
-      api: { condition: service_healthy }
-      ws:  { condition: service_healthy }
+      api:   { condition: service_healthy }
+      ws:    { condition: service_healthy }
+      front: { condition: service_healthy }
     healthcheck:
       # 127.0.0.1 y no localhost: la config hace `listen 80` (solo IPv4) y dentro
       # del contenedor localhost resuelve primero a ::1 -> connection refused.

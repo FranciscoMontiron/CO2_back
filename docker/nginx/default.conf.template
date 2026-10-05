@@ -1,8 +1,14 @@
 # ─────────────────────────────────────────────────────────────────────────────
 #  nginx — terminacion TLS (RNF003) y ruteo del split WSGI/ASGI (ADR-0003)
 #
-#    /api/*  → gunicorn (WSGI, sincrono)   → comandos, CRUD, auth
-#    /ws/*   → daphne   (ASGI, asincrono)  → telemetria, alarmas, estado
+#    /api/*    → gunicorn (WSGI, sincrono)   → comandos, CRUD, auth
+#    /admin/*  → gunicorn                    → admin de Django
+#    /ws/*     → daphne   (ASGI, asincrono)  → telemetria, alarmas, estado
+#    /*        → front    (estaticos de la SPA de React)
+#
+#  Front y API comparten origen a proposito: sin CORS, sin contenido mixto, y
+#  el front llama a `/api/...` con rutas relativas igual que detras del proxy
+#  de Vite en desarrollo.
 # ─────────────────────────────────────────────────────────────────────────────
 
 upstream co2_api {
@@ -12,6 +18,10 @@ upstream co2_api {
 
 upstream co2_ws {
     server ws:9000;
+}
+
+upstream co2_front {
+    server front:80;
 }
 
 # El token de auth del WebSocket viaja en la query string, porque el browser no
@@ -100,6 +110,30 @@ server {
         proxy_read_timeout 3600s;
         proxy_send_timeout 3600s;
         proxy_buffering    off;
+    }
+
+    # ── Admin de Django ──────────────────────────────────────────────────────
+    #  Sin esta ruta /admin/ caia en la raiz y devolvia 404, aunque el README lo
+    #  ofreciera. Ahora la raiz es el front, asi que necesita su location propia.
+    location /admin/ {
+        proxy_pass http://co2_api;
+        proxy_http_version 1.1;
+        proxy_set_header Connection        "";
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Host  $host;
+    }
+
+    # ── Front (SPA) ──────────────────────────────────────────────────────────
+    #  El contenedor `front` resuelve el fallback a index.html de las rutas del
+    #  cliente (/registro/ENS-..., /programas): aca solo se reenvia.
+    location / {
+        proxy_pass http://co2_front;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_set_header Host       $host;
     }
 
     location /static/ {

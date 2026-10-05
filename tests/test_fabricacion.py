@@ -62,12 +62,12 @@ def test_una_red_recien_fabricada_no_tiene_espectro(red):
 
 @pytest.mark.django_db
 def test_el_espectro_reconstruye_las_longitudes_de_onda(red, procedimiento):
-    """No se guardan las lambdas: salen de la grilla regular del barrido (ADR-0007)."""
+    """El espectro guarda el eje tal como lo exporto el OSA (ADR-0008)."""
     espectro = Espectro.objects.create(
         red=red,
         procedimiento=procedimiento,
         fecha_captura=datetime.datetime(2026, 10, 2, 14, 0, tzinfo=datetime.UTC),
-        longitud_onda_inicial=1500.0,
+        longitudes_onda=[1500.0, 1500.05, 1500.10, 1500.15],
         transmitancias=[-10.0, -12.0, -30.0, -11.0],
     )
 

@@ -31,3 +31,9 @@ services:
   controller:
     volumes:
       - ./:/app
+
+  eventos:
+    build:
+      target: dev
+    volumes:
+      - ./:/app

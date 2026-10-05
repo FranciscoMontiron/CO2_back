@@ -138,6 +138,7 @@ class Programa(models.Model):
         blank=True,
     )
     creado_en = models.DateTimeField("creado en", auto_now_add=True)
+    actualizado_en = models.DateTimeField("actualizado en", auto_now=True)
 
     class Meta:
         """Metadatos del modelo."""

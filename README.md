@@ -3,8 +3,11 @@
 Backend del SCADA para el **grabado de LPGs (Long Period Gratings) con láser de CO₂**.
 Despliegue de destino: **Raspberry Pi 5**.
 
-Frontend: [`CO2_front`](https://github.com/Fedebravo12/CO2_front) — mockup React + Vite,
-con la capa de API aislada en `src/mock/api.ts` lista para conectar.
+Frontend: [`CO2_front`](https://github.com/Fedebravo12/CO2_front) — React + Vite,
+conectado a la API REST y a la telemetría por WebSocket.
+
+**Para levantar el proyecto completo desde cero, seguir [Puesta en marcha](#puesta-en-marcha).**
+El Docker Compose de este repositorio construye y levanta tanto el back como el front.
 
 ---
 
@@ -119,38 +122,105 @@ ya están escritos.
 
 ## Requisitos previos
 
-- **Docker Desktop corriendo** (no solo instalado — ver troubleshooting)
+- **Git** para clonar ambos repositorios.
+- **Docker con Compose v2** (`docker compose version`). En Windows y macOS, Docker
+  Desktop corriendo; en Windows, usar el motor WSL2 y contenedores Linux.
 - **El repo del front clonado al lado de este**: `../CO2_front`. El compose lo construye
   desde ahí. Si está en otro lado, fijar `FRONT_DIR` en `.env`.
-- Git Bash u otro shell POSIX, para `gen-certs.sh`
+- Git Bash con OpenSSL en Windows, o un shell POSIX con OpenSSL en Linux/macOS,
+  para `gen-certs.sh`.
+- Para levantar todo con Docker **no hace falta instalar Python, Node.js, MySQL ni
+  Redis en la computadora**: se ejecutan dentro de los contenedores.
 - Para desarrollo fuera de contenedores: Python 3.12+
 
 ---
 
 ## Puesta en marcha
 
+### 1. Descargar los dos repositorios
+
+Ejecutar desde una carpeta vacía que contenga el proyecto (PowerShell, Git Bash o
+terminal de Linux/macOS):
+
 ```bash
-# Los dos repos, uno al lado del otro
-git clone https://github.com/FranciscoMontiron/CO2_back.git
-git clone https://github.com/Fedebravo12/CO2_front.git
+git clone --branch main https://github.com/FranciscoMontiron/CO2_back.git
+git clone --branch main https://github.com/Fedebravo12/CO2_front.git
 cd CO2_back
-
-# 1. Entorno. Editar .env y cambiar TODAS las contraseñas.
-cp .env.example .env
-
-# 2. Certificado autofirmado para desarrollo (RNF003) (terminal bash)
-sh docker/nginx/gen-certs.sh
-
-# 3. Levantar la simulación arm64 de la Pi 5 (back + front)
-docker compose up -d --build
-
-# 4. Base de datos y datos de demostración
-docker compose exec api python manage.py migrate
-docker compose exec api python manage.py cargar_datos_iniciales --con-ejemplo
 ```
 
-Abrir **https://localhost:8443** e ingresar con `admin`, `investigador` u `operador`
-(la contraseña es igual al usuario). Cada uno ve lo que su rol permite.
+La estructura debe quedar así; no clonar el front dentro del back:
+
+```text
+proyecto/
+├── CO2_back/
+└── CO2_front/
+```
+
+Si se descargan ZIP de GitHub, renombrar `CO2_back-main` y `CO2_front-main` con los
+nombres anteriores, o ajustar `FRONT_DIR` en `.env`.
+
+### 2. Configurar el entorno del back
+
+En Git Bash o Linux/macOS:
+
+```bash
+cp .env.example .env
+```
+
+En PowerShell:
+
+```powershell
+Copy-Item .env.example .env
+```
+
+Editar `.env`: cambiar `DJANGO_SECRET_KEY`, `MYSQL_PASSWORD` y
+`MYSQL_ROOT_PASSWORD`. Mantener `CONTROLLER_HAL=simulado` para probar sin hardware.
+Para una PC Intel/AMD, usar `TARGET_PLATFORM=linux/amd64` para evitar emulación;
+para Raspberry Pi 5 o validar ARM64, usar `linux/arm64` (valor de la plantilla).
+Mantener `FRONT_DIR=../CO2_front` si se respetó la estructura anterior.
+
+El front servido por Docker no necesita un `.env` propio: usa `/api/` y `/ws/`
+desde el mismo origen que la interfaz.
+
+### 3. Generar el certificado de desarrollo
+
+Desde `CO2_back`, en **Git Bash** (Windows) o terminal de Linux/macOS:
+
+```bash
+sh docker/nginx/gen-certs.sh
+```
+
+Si se venían ejecutando los pasos en PowerShell, abrir Git Bash en esa misma
+carpeta para este comando y luego volver a PowerShell.
+
+### 4. Inicializar la base y levantar el sistema
+
+Desde `CO2_back`, en cualquiera de las terminales anteriores:
+
+```bash
+# Primero las dependencias y la API; esperar a que estén saludables.
+docker compose up -d --build --wait mysql redis controller api
+
+# Crear las tablas, los datos de demo y los estáticos del admin.
+docker compose exec api python manage.py migrate
+docker compose exec api python manage.py cargar_datos_iniciales --con-ejemplo
+docker compose exec api python manage.py collectstatic --noinput
+
+# Ahora levantar el resto, incluido el front y el servicio de eventos.
+docker compose up -d --build --wait
+```
+
+Inicializar primero evita que el servicio `eventos` consulte tablas que todavía
+no existen. Si un comando falla, revisar sus logs antes de continuar.
+
+Abrir **https://localhost:8443** y aceptar el certificado autofirmado de desarrollo.
+Cada usuario ve lo que su rol permite:
+
+| Usuario | Contraseña | Rol |
+|---|---|---|
+| `admin` | `admin` | Administrador |
+| `investigador` | `investigador` | Investigador |
+| `operador` | `operador` | Operador |
 
 > Los usuarios de demo los crea `--con-ejemplo`. **No usar esa opción en un despliegue
 > real**: las contraseñas son públicas.
@@ -162,9 +232,13 @@ fuente para `aarch64`. Es esperable, y es justamente el hallazgo que
 ### Verificación
 
 ```bash
-docker compose ps                                   # los 8 servicios healthy
-curl -k https://localhost:8443/api/healthz/         # estado de dependencias
+docker compose ps                                  # los 8 servicios healthy
+curl -k https://localhost:8443/api/healthz/          # estado de dependencias
 ```
+
+En PowerShell usar `curl.exe -k https://localhost:8443/api/healthz/` para evitar
+el alias de `Invoke-WebRequest`. El healthcheck verifica conectividad: las tablas
+y los usuarios se crean con los comandos del paso 4.
 
 Respuesta esperada:
 
@@ -204,9 +278,30 @@ En PowerShell: `$env:TARGET_PLATFORM="linux/amd64"` antes, o fijarlo en `.env`.
 > Este modo **no valida compatibilidad arm64**. Antes de cerrar cada entrega hay que
 > correr la simulación arm64.
 
-Para el front con recarga en caliente, en el repo `CO2_front`: `npm run dev`. Vite sirve
-en `http://localhost:5173` y reenvía `/api` a este nginx, así que necesita el backend
-levantado.
+Para el front con recarga en caliente, instalar Node.js 22.12+ y, en `CO2_front`,
+ejecutar `npm ci` y luego `npx vite`. Abrir `http://localhost:5173`: Vite reenvía
+`/api` y `/ws` al nginx del back, que debe seguir levantado. Ver la
+[guía del front](https://github.com/Fedebravo12/CO2_front#readme) para los scripts
+y la configuración de un backend en otro puerto.
+
+### Detener y volver a levantar
+
+Desde `CO2_back`:
+
+```bash
+docker compose stop       # detener sin borrar los datos
+docker compose up -d --wait # volver a levantar con la configuración habitual
+docker compose logs -f api ws eventos controller nginx
+```
+
+Si se usa el override de desarrollo, agregar `-f docker-compose.yml
+-f docker-compose.dev.yml` a todos los comandos de Compose de esa sesión.
+Después de actualizar el código de ambos repositorios, reconstruir con
+`docker compose up -d --build --wait mysql redis controller api`, aplicar `migrate`
+y `collectstatic --noinput`, y ejecutar `docker compose up -d --build --wait`.
+No hace falta volver a copiar `.env` ni cargar los datos de demo.
+`docker compose down` también conserva los datos; `docker compose down -v`
+**borra los volúmenes y la base de datos**.
 
 ---
 
@@ -314,7 +409,7 @@ CO2_back/
 │   ├── wsgi.py                  → gunicorn, servicio `api`
 │   └── asgi.py                  → daphne,   servicio `ws`
 ├── controller/                  Proceso controlador (ADR-0002)
-│   └── main.py                  Esqueleto: solo heartbeat
+│   └── main.py                  Lazo de control y laboratorio simulado
 ├── docker/
 │   ├── api/Dockerfile           Imagen compartida api + ws
 │   ├── controller/Dockerfile    Imagen mínima del controlador

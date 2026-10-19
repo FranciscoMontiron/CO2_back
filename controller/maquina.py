@@ -29,6 +29,7 @@ import time
 from collections.abc import Callable
 from datetime import UTC, datetime
 
+from controller.hal_base import HalBase
 from controller import protocolo as p
 from controller.simulador import TIEMPO_SHUTTER_S, HalSimulado
 
@@ -112,7 +113,7 @@ class Maquina:
 
     def __init__(
         self,
-        hal: HalSimulado,
+        hal: HalBase,
         emitir: Callable[[str, dict], None],
         velocidad: float = 1.0,
     ) -> None:
@@ -317,16 +318,13 @@ class Maquina:
 
     def _armar_shutter(self, _cmd: dict) -> None:
         self._exigir_no(EMERGENCIA)
-        self.hal.shutter_armado = True
-        self.hal.shutter_abierto = False
-        self._avisar("Shutter armado y cerrado.")
+        self.hal.armar_shutter()
 
     def _desarmar_shutter(self, _cmd: dict) -> None:
         self._exigir_no(GRABANDO)
         if self.hal.laser:
             raise ComandoRechazadoError("apague el laser antes de desarmar el shutter.")
-        self.hal.shutter_armado = False
-        self._avisar("Shutter desarmado.")
+        self.hal.desarmar_shutter()
 
     def _encender_laser(self, _cmd: dict) -> None:
         if self.estado != LISTO:

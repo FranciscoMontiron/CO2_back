@@ -30,6 +30,7 @@ import signal
 import time
 from pathlib import Path
 
+from controller.rpi import HalGpio
 import redis.asyncio as redis
 
 from controller import protocolo as p
@@ -225,16 +226,15 @@ async def main() -> None:
     logger.info("  velocidad sim ...... x%s", VELOCIDAD)
     logger.info("  heartbeat TTL ...... %d s", HEARTBEAT_TTL)
 
-    if HAL != "simulado":
-        logger.warning(
-            "CONTROLLER_HAL=%s pero el driver de GPIO todavia no esta implementado (#22). "
-            "Se usa el HAL simulado.",
-            HAL,
-        )
+    # Selecciona la instancia inicial según la variable de entorno
+    if HAL == "simulado":
+        halActivo = HalSimulado()
+    elif HAL == "gpio":
+        halActivo = HalGpio()
 
     cola: asyncio.Queue = asyncio.Queue()
     maquina = Maquina(
-        HalSimulado(), emitir=lambda t, d: cola.put_nowait((t, d)), velocidad=VELOCIDAD
+        halActivo, emitir=lambda t, d: cola.put_nowait((t, d)), velocidad=VELOCIDAD
     )
 
     latido = redis.Redis.from_url(f"{REDIS_URL}/{REDIS_DB_HEARTBEAT}")

@@ -233,7 +233,7 @@ class HalSimulado(HalBase):
         self.shutter_abierto = False
         logger.info("[HalGpio] Shutter armado (simulado stub)")
         
-    def armar_shutter(self) -> None:
+    def desarmar_shutter(self) -> None:
         """Desarma el shutter: inhabilita su libre opración"""
         self.shutter_armado = False
         logger.info("[HalGpio] Shutter desarmado (simulado stub)")

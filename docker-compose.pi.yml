@@ -1,0 +1,23 @@
+# ─────────────────────────────────────────────────────────────────────────────
+#  Override para la Raspberry Pi 5 real: acceso del controlador al GPIO.
+#
+#  Va aparte del docker-compose.yml porque en una PC no existe /dev/gpiochip*
+#  y el contenedor no arrancaria. En la Pi se activa desde el .env con:
+#
+#    COMPOSE_FILE=docker-compose.yml:docker-compose.pi.yml
+#
+#  y desde ahi `docker compose up` lo incluye solo.
+# ─────────────────────────────────────────────────────────────────────────────
+
+services:
+  controller:
+    devices:
+      # El chip del conector (el que `gpiodetect` muestra como pinctrl-rp1) se
+      # monta en las dos rutas: gpiozero 2.0.1 abre siempre gpiochip4 en la
+      # Pi 5, y en los kernels nuevos el chip del conector es gpiochip0.
+      - ${GPIO_CHIP_HOST:-/dev/gpiochip0}:/dev/gpiochip0
+      - ${GPIO_CHIP_HOST:-/dev/gpiochip0}:/dev/gpiochip4
+    group_add:
+      # El usuario del contenedor (co2) necesita el grupo dueno del chip.
+      # Numero en la Pi: getent group gpio | cut -d: -f3
+      - "${GPIO_GID:?Definir GPIO_GID en el .env (getent group gpio | cut -d: -f3)}"

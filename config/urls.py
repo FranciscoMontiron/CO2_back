@@ -18,6 +18,7 @@ from operacion.views import (
     ControlEstadoView,
     ControlIniciarView,
     EventoEmergenciaViewSet,
+    HardwareConfigView,
     UmbralViewSet,
 )
 from programas.views import ProgramaViewSet
@@ -52,4 +53,5 @@ urlpatterns = [
         name="docs",
     ),
     path("admin/", admin.site.urls),
+    path("api/hardware/config/", HardwareConfigView.as_view(), name="hardware_config"),
 ]

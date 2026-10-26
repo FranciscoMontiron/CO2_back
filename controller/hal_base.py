@@ -1,5 +1,4 @@
 from abc import ABC, abstractmethod
-from controller import protocolo as p
 
 class HalBase(ABC):
     """Interfaz abstracta para la capa de abstracción de hardware (HAL)"""

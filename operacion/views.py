@@ -1,5 +1,7 @@
 """Vistas de alertas, emergencias y umbrales."""
 
+import json
+from pathlib import Path
 from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db import transaction
@@ -21,6 +23,9 @@ from trazabilidad.models import RegistroDeFabricacion
 from . import control
 from .models import Alerta, Configuracion, EventoEmergencia, Umbral
 from .serializers import AlertaSerializer, EventoEmergenciaSerializer, UmbralSerializer
+
+# Apunta directo al archivo hardware_config.json en el módulo controller
+RUTA_JSON_HARDWARE = Path(__file__).resolve().parent.parent / "controller" / "hardware_config.json"
 
 
 class AlertaViewSet(viewsets.ReadOnlyModelViewSet):
@@ -293,3 +298,28 @@ def _crear_registro(programa, modo, usuario, numero_lote=None) -> RegistroDeFabr
     )
     registro.operadores.add(usuario)
     return registro
+
+
+class HardwareConfigView(APIView):
+    def get(self, request):
+        """Lee el archivo hardware_config.json y retorna su contenido al Frontend."""
+        if not RUTA_JSON_HARDWARE.exists():
+            return Response({"actuadores": {}}, status=status.HTTP_200_OK)
+        
+        try:
+            with open(RUTA_JSON_HARDWARE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            return Response(data, status=status.HTTP_200_OK)
+        except Exception as e:
+            return Response({"error": f"Error al leer JSON: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    def post(self, request):
+        """Recibe el JSON modificado desde React y sobrescribe el archivo en el servidor."""
+        try:
+            nueva_config = request.data
+            with open(RUTA_JSON_HARDWARE, "w", encoding="utf-8") as f:
+                json.dump(nueva_config, f, indent=2, ensure_ascii=False)
+            
+            return Response({"mensaje": "Configuración de hardware actualizada"}, status=status.HTTP_200_OK)
+        except Exception as e:
+            return Response({"error": f"Error al guardar JSON: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)

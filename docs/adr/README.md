@@ -18,6 +18,7 @@ sobrevivir a los cambios de opinión.
 | [0007](0007-telemetria-en-vivo-sin-persistencia.md) | La telemetría es efímera: se transmite, no se persiste | Aceptada |
 | [0008](0008-espectro-guarda-longitudes-de-onda.md) | El espectro guarda sus longitudes de onda | Aceptada (reemplaza la decisión 5 de 0007) |
 | [0009](0009-protocolo-del-bus-y-servicio-de-eventos.md) | Protocolo del bus y servicio de eventos | Aceptada (completa a 0004) |
+| [0010](0010-programa-de-grabado-con-perfil-de-periodo-y-version.md) | Programa de grabado: perfil de período editable y versión por edición | Aceptada |
 
 ## Estados
 

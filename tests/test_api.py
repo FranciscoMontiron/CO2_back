@@ -442,3 +442,172 @@ def test_el_listado_de_usuarios_no_expone_la_contrasena(como, usuario):
     assert r.status_code == 200
     assert all("password" not in u for u in r.data)
     assert r.data[0]["rol"] == TipoRol.OPERADOR
+
+
+# ── ABM de usuarios (RF011, RN011) ───────────────────────────────────────────
+
+
+def _datos_usuario(**cambios):
+    """Datos validos para el alta de un usuario."""
+    datos = {
+        "username": "nuevo",
+        "first_name": "Ana",
+        "last_name": "Gomez",
+        "email": "ana@example.com",
+        "legajo": "",
+        "rol": TipoRol.OPERADOR,
+        "password": "Laser-CO2-2026",
+    }
+    datos.update(cambios)
+    return datos
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("rol_solicitante", ["operador", "investigador"])
+def test_solo_el_administrador_gestiona_usuarios(como, usuario, investigador, rol_solicitante):
+    """Alta, modificacion y baja son del administrador; el resto recibe 403."""
+    solicitante = usuario if rol_solicitante == "operador" else investigador
+    cliente = como(solicitante)
+
+    assert cliente.post("/api/usuarios/", _datos_usuario(), format="json").status_code == 403
+    url = f"/api/usuarios/{usuario.pk}/"
+    assert cliente.patch(url, {"first_name": "X"}, format="json").status_code == 403
+    assert cliente.delete(url).status_code == 403
+    assert not Usuario.objects.filter(username="nuevo").exists()
+
+
+@pytest.mark.django_db
+def test_los_demas_roles_ven_el_listado_reducido(como, usuario, administrador):
+    """El listado sigue abierto para el filtro por operador, sin datos personales."""
+    r = como(usuario).get("/api/usuarios/")
+    assert r.status_code == 200
+    assert all("email" not in u and "legajo" not in u for u in r.data)
+
+
+@pytest.mark.django_db
+def test_el_administrador_da_de_alta_con_la_contrasena_hasheada(como, administrador, usuario):
+    """La contrasena entra pero no sale, y queda hasheada."""
+    r = como(administrador).post("/api/usuarios/", _datos_usuario(), format="json")
+
+    assert r.status_code == 201, r.data
+    assert "password" not in r.data
+    assert r.data["rol"] == TipoRol.OPERADOR
+    nuevo = Usuario.objects.get(username="nuevo")
+    assert nuevo.check_password("Laser-CO2-2026")
+    assert nuevo.legajo is None
+    assert nuevo.rol.codigo == TipoRol.OPERADOR
+
+
+@pytest.mark.django_db
+def test_el_alta_exige_contrasena(como, administrador, usuario):
+    """Sin contrasena el usuario no podria ingresar nunca."""
+    datos = _datos_usuario()
+    del datos["password"]
+    r = como(administrador).post("/api/usuarios/", datos, format="json")
+    assert r.status_code == 400
+    assert "password" in r.data
+
+
+@pytest.mark.django_db
+def test_el_administrador_modifica_rol_y_contrasena(como, administrador, usuario, investigador):
+    """La contrasena solo cambia si se envia."""
+    r = como(administrador).patch(
+        f"/api/usuarios/{usuario.pk}/",
+        {"rol": TipoRol.INVESTIGADOR, "password": "Otra-Clave-2026"},
+        format="json",
+    )
+    assert r.status_code == 200, r.data
+    usuario.refresh_from_db()
+    assert usuario.rol.codigo == TipoRol.INVESTIGADOR
+    assert usuario.check_password("Otra-Clave-2026")
+
+
+@pytest.mark.django_db
+def test_la_baja_es_logica_y_se_puede_reactivar(como, administrador, usuario):
+    """DELETE no borra: los ensayos del usuario siguen siendo atribuibles."""
+    cliente = como(administrador)
+    assert cliente.delete(f"/api/usuarios/{usuario.pk}/").status_code == 204
+    usuario.refresh_from_db()
+    assert usuario.is_active is False
+    assert usuario.fecha_baja is not None
+
+    r = cliente.patch(f"/api/usuarios/{usuario.pk}/", {"activo": True}, format="json")
+    assert r.status_code == 200
+    usuario.refresh_from_db()
+    assert usuario.is_active is True
+    assert usuario.fecha_baja is None
+
+
+@pytest.mark.django_db
+def test_el_administrador_no_puede_bloquearse_a_si_mismo(como, administrador):
+    """Darse de baja o quitarse el rol dejaria el sistema sin quien lo administre."""
+    cliente = como(administrador)
+    url = f"/api/usuarios/{administrador.pk}/"
+
+    assert cliente.delete(url).status_code == 400
+    assert cliente.patch(url, {"activo": False}, format="json").status_code == 400
+    assert cliente.patch(url, {"rol": TipoRol.OPERADOR}, format="json").status_code == 400
+    administrador.refresh_from_db()
+    assert administrador.is_active is True
+    assert administrador.rol.codigo == TipoRol.ADMINISTRADOR
+
+
+@pytest.mark.django_db
+def test_el_alta_de_usuario_queda_auditada_sin_la_contrasena(como, administrador, usuario):
+    """RN010: la accion se asienta, pero el hash no se copia a la bitacora."""
+    como(administrador).post("/api/usuarios/", _datos_usuario(), format="json")
+    nuevo = Usuario.objects.get(username="nuevo")
+    asiento = RegistroAuditoria.objects.get(
+        entidad="usuarios.Usuario", codigo_entidad=str(nuevo.pk), accion="CREAR"
+    )
+    assert asiento.critica is True
+    assert "password" not in asiento.valor_nuevo
+
+
+# ── Atribucion de la auditoria con JWT (RN010) ───────────────────────────────
+
+
+def _cliente_con_token(username, password):
+    """Cliente que inicia sesion por la API y manda el token como el front.
+
+    No usa ``force_authenticate``: ese atajo carga el usuario sin pasar por la
+    autenticacion JWT, y es justo ahi donde la atribucion se perdia.
+    """
+    cliente = APIClient()
+    r = cliente.post(
+        "/api/auth/token/", {"username": username, "password": password}, format="json"
+    )
+    assert r.status_code == 200, r.data
+    cliente.credentials(HTTP_AUTHORIZATION=f"Bearer {r.data['access']}")
+    return cliente
+
+
+@pytest.mark.django_db
+def test_con_jwt_el_asiento_se_atribuye_a_quien_hizo_la_peticion(administrador, usuario):
+    """Antes de la correccion, todo lo hecho por la API quedaba como "sistema"."""
+    cliente = _cliente_con_token("administrador", "administrador")
+    r = cliente.post("/api/usuarios/", _datos_usuario(), format="json", REMOTE_ADDR="10.0.0.7")
+    assert r.status_code == 201, r.data
+
+    asiento = RegistroAuditoria.objects.get(
+        entidad="usuarios.Usuario", codigo_entidad=str(r.data["id"]), accion="CREAR"
+    )
+    assert asiento.usuario == administrador
+    assert asiento.direccion_ip == "10.0.0.7"
+
+    listado = cliente.get("/api/auditoria/").data
+    alta = next(a for a in listado if a["accion"] == "CREAR" and a["detalle"].startswith("Alta de"))
+    assert alta["usuario"] == "administrador"
+
+
+@pytest.mark.django_db
+def test_con_jwt_se_atribuyen_tambien_los_programas(investigador):
+    """La correccion es del middleware: vale para cualquier modelo auditado."""
+    cliente = _cliente_con_token("investigador", "investigador")
+    r = cliente.post("/api/programas/", _datos_programa(), format="json")
+    assert r.status_code == 201, r.data
+
+    asiento = RegistroAuditoria.objects.filter(entidad="programas.Programa", accion="CREAR").latest(
+        "fecha_hora"
+    )
+    assert asiento.usuario == investigador

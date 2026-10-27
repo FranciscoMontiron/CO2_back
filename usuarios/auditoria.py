@@ -5,11 +5,16 @@ programador se olvide de registrarla**. Por eso la auditoria no se invoca a
 mano desde las vistas: se engancha a las senales de guardado y borrado de los
 modelos, y a la de inicio de sesion.
 
-Quien hizo la accion y desde que IP no viajan en la senal; los captura
-:class:`AuditoriaMiddleware` al entrar la peticion y los deja en una
-``ContextVar``. Se usa ``ContextVar`` y no ``threading.local`` porque el
-proyecto tiene un proceso ASGI (ADR-0003), donde varias peticiones comparten
-hilo y un ``local`` mezclaria los usuarios entre si.
+Quien hizo la accion y desde que IP no viajan en la senal. La peticion la
+captura :class:`AuditoriaMiddleware` y la deja en una ``ContextVar``; el
+usuario se lee de ella recien al escribir el asiento. No puede leerse en el
+middleware: la API autentica con JWT dentro de la vista de DRF, despues de todo
+el middleware, y ahi ``request.user`` todavia es anonimo. DRF copia el usuario
+autenticado a la peticion de Django, asi que al guardar ya esta disponible.
+
+Se usa ``ContextVar`` y no ``threading.local`` porque el proyecto tiene un
+proceso ASGI (ADR-0003), donde varias peticiones comparten hilo y un ``local``
+mezclaria los usuarios entre si.
 
 **Una falla al auditar NO se traga.** Si el asiento no se puede escribir, la
 excepcion se propaga y, dentro de la transaccion, la accion se revierte. Es
@@ -27,16 +32,29 @@ from django.contrib.auth.signals import user_logged_in
 from django.core.serializers.json import DjangoJSONEncoder
 from django.db.models.signals import post_delete, post_save, pre_save
 from django.forms.models import model_to_dict
+from django.http import HttpRequest
 
 from comun.enums import AccionAuditoria
 
 
 @dataclass(frozen=True)
 class _Contexto:
-    """Quien esta actuando y desde donde."""
+    """La peticion en curso y desde donde llego."""
 
-    usuario_id: int | None
+    peticion: HttpRequest
     direccion_ip: str | None
+
+    @property
+    def usuario_id(self) -> int | None:
+        """Usuario autenticado en este momento, o ``None`` si es anonimo.
+
+        Se resuelve al consultarlo, no al entrar la peticion: con JWT el usuario
+        recien queda cargado cuando DRF valida el token, dentro de la vista.
+        """
+        usuario = getattr(self.peticion, "user", None)
+        if usuario is None or not usuario.is_authenticated:
+            return None
+        return usuario.pk
 
 
 _contexto: ContextVar[_Contexto | None] = ContextVar("auditoria", default=None)
@@ -87,13 +105,7 @@ class AuditoriaMiddleware:
         Returns:
             La respuesta del siguiente eslabon.
         """
-        usuario = getattr(request, "user", None)
-        token = _contexto.set(
-            _Contexto(
-                usuario_id=usuario.pk if usuario is not None and usuario.is_authenticated else None,
-                direccion_ip=_ip_de(request),
-            )
-        )
+        token = _contexto.set(_Contexto(peticion=request, direccion_ip=_ip_de(request)))
         try:
             return self.get_response(request)
         finally:

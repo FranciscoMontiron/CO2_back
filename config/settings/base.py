@@ -73,8 +73,8 @@ MIDDLEWARE = [
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
     "django.contrib.auth.middleware.AuthenticationMiddleware",
-    # Despues de AuthenticationMiddleware: necesita `request.user` ya cargado
-    # para saber a quien atribuir cada asiento de auditoria (RN010).
+    # Guarda la peticion para atribuir cada asiento de auditoria (RN010). El
+    # usuario se lee al guardar, no aca: con JWT lo carga DRF dentro de la vista.
     "usuarios.auditoria.AuditoriaMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",

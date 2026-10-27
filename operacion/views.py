@@ -1,5 +1,8 @@
 """Vistas de alertas, emergencias y umbrales."""
 
+import logging
+
+import redis
 from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db import transaction
@@ -11,7 +14,8 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from comun.enums import ModoEjecucion
+from comun.enums import EstadoSistema, ModoEjecucion, TipoRol
+from comun.permisos import escritura_solo_para
 from controller import protocolo
 from fabricacion.models import Lote, Red
 from programas.models import Programa
@@ -20,7 +24,14 @@ from trazabilidad.models import RegistroDeFabricacion
 
 from . import control
 from .models import Alerta, Configuracion, EventoEmergencia, Umbral
-from .serializers import AlertaSerializer, EventoEmergenciaSerializer, UmbralSerializer
+from .serializers import (
+    AlertaSerializer,
+    EventoEmergenciaSerializer,
+    UmbralEdicionSerializer,
+    UmbralSerializer,
+)
+
+logger = logging.getLogger("operacion.views")
 
 
 class AlertaViewSet(viewsets.ReadOnlyModelViewSet):
@@ -68,15 +79,49 @@ class EventoEmergenciaViewSet(viewsets.ReadOnlyModelViewSet):
 
 
 class UmbralViewSet(viewsets.ReadOnlyModelViewSet):
-    """Umbrales de la configuracion vigente.
+    """Umbrales de la configuracion vigente. Solo el administrador los edita.
 
     Se listan solo los de la configuracion activa: son los que el controlador
     carga, y mostrar los de configuraciones viejas confundiria sobre que limites
     estan rigiendo.
+
+    Editar uno (``PATCH``) no lo modifica en el lugar: crea y activa una version
+    nueva de la configuracion (``Configuracion.nueva_version``), para que cada
+    ensayo siga apuntando a los umbrales con los que corrio. Por eso la respuesta
+    trae un ``id`` distinto al pedido.
     """
 
     serializer_class = UmbralSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [escritura_solo_para(TipoRol.ADMINISTRADOR)]
+    http_method_names = ["get", "patch", "head", "options"]
+
+    def partial_update(self, request, *args, **kwargs) -> Response:
+        """Aplica el cambio en una version nueva y se la publica al controlador."""
+        umbral = self.get_object()
+        telemetria = control.ultima_telemetria()
+        if telemetria and telemetria.get("estado") == EstadoSistema.GRABANDO:
+            return Response(
+                {
+                    "detail": (
+                        "No se pueden cambiar los umbrales durante un grabado. "
+                        "Espere a que termine el ensayo."
+                    )
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+        edicion = UmbralEdicionSerializer(umbral, data=request.data, partial=True)
+        edicion.is_valid(raise_exception=True)
+        with transaction.atomic():
+            nueva = umbral.configuracion.nueva_version(
+                umbral.variable, edicion.validated_data, usuario=request.user
+            )
+        try:
+            # El servicio de eventos la republica cada pocos segundos; esto
+            # solo evita esperar a ese ciclo.
+            control.publicar_configuracion()
+        except redis.RedisError:
+            logger.warning("No se pudo publicar la configuracion nueva al controlador.")
+        return Response(UmbralSerializer(nueva.umbrales.get(variable=umbral.variable)).data)
 
     def get_queryset(self):
         """Umbrales de la configuracion activa, o ninguno si no hay vigente."""

@@ -72,6 +72,42 @@ class Configuracion(models.Model):
         self.activa = True
         self.save(update_fields=["activa"])
 
+    def nueva_version(self, variable: str, cambios: dict, usuario=None) -> Configuracion:
+        """Crea y activa una version nueva con un umbral modificado.
+
+        Editar un umbral no modifica esta configuracion: copia todos sus
+        umbrales a una version nueva, aplica el cambio y la pone en vigencia.
+        Asi cada ensayo sigue apuntando a los umbrales con los que corrio.
+
+        Args:
+            variable: La :class:`VariableMonitoreada` del umbral a cambiar.
+            cambios: Campos del umbral a cambiar y sus valores nuevos.
+            usuario: Quien definio la version nueva.
+
+        Returns:
+            La configuracion nueva, ya activa.
+        """
+        ultima = (
+            Configuracion.objects.filter(nombre=self.nombre).aggregate(models.Max("version"))[
+                "version__max"
+            ]
+            or 0
+        )
+        nueva = Configuracion.objects.create(
+            nombre=self.nombre,
+            descripcion=self.descripcion,
+            version=ultima + 1,
+            definida_por=usuario,
+        )
+        campos = ["variable", "valor_min", "valor_max", "severidad", "accion", "activo"]
+        for umbral in self.umbrales.all():
+            datos = {c: getattr(umbral, c) for c in campos}
+            if umbral.variable == variable:
+                datos.update(cambios)
+            Umbral.objects.create(configuracion=nueva, **datos)
+        nueva.activar()
+        return nueva
+
 
 class Umbral(models.Model):
     """Rango admisible para una variable monitoreada.

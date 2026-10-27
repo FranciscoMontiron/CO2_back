@@ -112,3 +112,32 @@ class UmbralSerializer(serializers.ModelSerializer):
         return (
             umbral.severidad == Severidad.CRITICA or umbral.accion == AccionUmbral.PARADA_EMERGENCIA
         )
+
+
+class UmbralEdicionSerializer(serializers.ModelSerializer):
+    """Lo que el administrador puede cambiar de un umbral (RF016, RN011).
+
+    La variable no se edita: un umbral es el rango de *una* variable, y
+    cambiarla seria otro umbral.
+    """
+
+    class Meta:
+        """Metadatos del serializador."""
+
+        model = Umbral
+        fields = ["valor_min", "valor_max", "severidad", "accion", "activo"]
+
+    def validate(self, attrs: dict) -> dict:
+        """Exige minimo menor que maximo, con un mensaje que diga que corregir."""
+        minimo = attrs.get("valor_min", self.instance.valor_min)
+        maximo = attrs.get("valor_max", self.instance.valor_max)
+        if minimo >= maximo:
+            raise serializers.ValidationError(
+                {
+                    "valor_max": (
+                        f"El maximo ({maximo}) tiene que ser mayor que el minimo ({minimo}). "
+                        "Revise los dos valores."
+                    )
+                }
+            )
+        return attrs

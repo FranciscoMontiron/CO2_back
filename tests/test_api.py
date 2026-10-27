@@ -611,3 +611,107 @@ def test_con_jwt_se_atribuyen_tambien_los_programas(investigador):
         "fecha_hora"
     )
     assert asiento.usuario == investigador
+
+
+# ── Edicion de umbrales (RF016, RN011) ───────────────────────────────────────
+
+
+@pytest.fixture
+def bus_umbrales(monkeypatch):
+    """Simula el controlador: guarda lo publicado y deja fijar su estado."""
+    from operacion import control
+
+    estado = {"telemetria": {"estado": "REPOSO"}, "publicaciones": 0}
+
+    def publicar():
+        estado["publicaciones"] += 1
+        return 1
+
+    monkeypatch.setattr(control, "ultima_telemetria", lambda: estado["telemetria"])
+    monkeypatch.setattr(control, "publicar_configuracion", publicar)
+    return estado
+
+
+@pytest.mark.django_db
+def test_solo_el_administrador_edita_umbrales(como, usuario, investigador, configuracion):
+    """Los demas roles los consultan, pero no los cambian."""
+    configuracion.activar()
+    umbral = configuracion.umbrales.get()
+    for quien in (usuario, investigador):
+        r = como(quien).patch(f"/api/umbrales/{umbral.pk}/", {"valor_max": 30}, format="json")
+        assert r.status_code == 403
+    assert Configuracion.objects.count() == 1
+
+
+@pytest.mark.django_db
+def test_editar_un_umbral_crea_una_version_nueva(
+    como, administrador, configuracion, registro, bus_umbrales
+):
+    """La configuracion vieja no se toca: el ensayo que corrio con ella la conserva."""
+    configuracion.activar()
+    Umbral.objects.create(
+        configuracion=configuracion, variable="CORRIENTE_AT", valor_min=0, valor_max=25
+    )
+    umbral = configuracion.umbrales.get(variable="TEMPERATURA_AGUA")
+
+    r = como(administrador).patch(
+        f"/api/umbrales/{umbral.pk}/", {"valor_max": 30, "accion": "ALERTA"}, format="json"
+    )
+
+    assert r.status_code == 200, r.data
+    assert r.data["id"] != umbral.pk
+    assert (r.data["valor_max"], r.data["accion"]) == (30, "ALERTA")
+
+    nueva = Configuracion.objects.get(activa=True)
+    assert nueva.pk != configuracion.pk
+    assert nueva.version == configuracion.version + 1
+    assert nueva.definida_por == administrador
+    # Se copian todos los umbrales, no solo el editado.
+    assert nueva.umbrales.get(variable="CORRIENTE_AT").valor_max == 25
+
+    umbral.refresh_from_db()
+    configuracion.refresh_from_db()
+    registro.refresh_from_db()
+    assert umbral.valor_max == 28
+    assert configuracion.activa is False
+    assert registro.configuracion == configuracion
+    assert bus_umbrales["publicaciones"] == 1
+
+
+@pytest.mark.django_db
+def test_el_listado_muestra_el_umbral_editado(como, administrador, configuracion, bus_umbrales):
+    """Despues de editar, lo vigente es la version nueva."""
+    configuracion.activar()
+    umbral = configuracion.umbrales.get()
+    como(administrador).patch(f"/api/umbrales/{umbral.pk}/", {"valor_min": 10}, format="json")
+
+    r = como(administrador).get("/api/umbrales/")
+    assert [u["valor_min"] for u in r.data] == [10]
+
+
+@pytest.mark.django_db
+def test_el_minimo_tiene_que_ser_menor_que_el_maximo(
+    como, administrador, configuracion, bus_umbrales
+):
+    """Un rango invertido no protege nada: se rechaza con un mensaje claro."""
+    configuracion.activar()
+    umbral = configuracion.umbrales.get()
+
+    r = como(administrador).patch(f"/api/umbrales/{umbral.pk}/", {"valor_min": 40}, format="json")
+
+    assert r.status_code == 400
+    assert "mayor que el minimo" in str(r.data["valor_max"])
+    assert Configuracion.objects.count() == 1
+
+
+@pytest.mark.django_db
+def test_no_se_editan_umbrales_durante_un_grabado(como, administrador, configuracion, bus_umbrales):
+    """El ensayo en curso quedaria con limites que cambiaron en el medio."""
+    configuracion.activar()
+    bus_umbrales["telemetria"] = {"estado": "GRABANDO"}
+    umbral = configuracion.umbrales.get()
+
+    r = como(administrador).patch(f"/api/umbrales/{umbral.pk}/", {"valor_max": 30}, format="json")
+
+    assert r.status_code == 409
+    assert Configuracion.objects.count() == 1

@@ -8,16 +8,19 @@ sentidos:
 =========================  ================================================
 Campo de la API            Donde vive en el modelo
 =========================  ================================================
-``desplazamiento_um``      ``Periodo`` constante: el periodo de la red
+``perfil_periodo``         ``Periodo.tipo`` (constante, lineal o exponencial)
+``desplazamiento_um``      ``Periodo.periodo_base``: el periodo de la primera marca
+``incremento_um``          ``Periodo.incremento`` (solo perfil lineal)
+``factor``                 ``Periodo.factor`` (solo perfil exponencial)
 ``duracion_pulso_ms``      ``Paso`` de grabado: ``tiempo_de_pulso``
 ``pulsos``                 ``Paso`` de grabado: ``repeticiones``
 ``distancia_mm``           ``valor_criterio_fin`` si el criterio es LONGITUD
 ``potencia_objetivo_mw``   ``Programa.potencia_objetivo``, guardada en W
 =========================  ================================================
 
-La distancia y la cantidad de pulsos no son independientes: se cumple el
-invariante del diagrama, ``longitud = marcas x periodo``. Segun el criterio de
-fin, una se ingresa y la otra se deriva.
+La distancia y la cantidad de pulsos no son independientes: la longitud es la
+suma de los periodos de las marcas (``marcas x periodo`` si el perfil es
+constante). Segun el criterio de fin, una se ingresa y la otra se deriva.
 
 Los programas multipaso que se puedan cargar por el admin se leen igual, pero
 esta representacion solo los describe en terminos de su paso de grabado.
@@ -27,6 +30,7 @@ from __future__ import annotations
 
 import math
 
+from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
 from rest_framework import serializers
 
@@ -39,6 +43,37 @@ from .models import Paso, Periodo, Programa
 CRITERIOS_EDITABLES = [CriterioFin.LONGITUD, CriterioFin.CANT_MARCAS, CriterioFin.MANUAL]
 
 ETIQUETA_GRABADO = "G01"
+
+# Tope de marcas al derivar los pulsos de una longitud con perfil variable: corta
+# un perfil que casi no crece en vez de iterar sin fin.
+MAXIMO_MARCAS = 100_000
+
+
+def _marcas_hasta(periodo: Periodo, longitud_um: float) -> int:
+    """Cuenta cuantas marcas entran en ``longitud_um`` con el perfil dado.
+
+    Args:
+        periodo: Perfil de periodo (no hace falta que este guardado).
+        longitud_um: Longitud disponible en micrometros.
+
+    Returns:
+        La cantidad de marcas completas.
+
+    Raises:
+        ValueError: Si el periodo deja de ser positivo o las marcas superan el tope.
+    """
+    if periodo.tipo == TipoPeriodo.CONSTANTE:
+        return math.floor(longitud_um / periodo.periodo_base)
+    acumulado, n = 0.0, 0
+    while n < MAXIMO_MARCAS:
+        distancia = periodo.calcular_distancia(n)
+        if distancia <= 0:
+            raise ValueError(f"El periodo deja de ser positivo en la marca {n + 1}.")
+        if acumulado + distancia > longitud_um:
+            return n
+        acumulado += distancia
+        n += 1
+    raise ValueError(f"La longitud requiere mas de {MAXIMO_MARCAS} marcas.")
 
 
 def _paso_de_grabado(programa: Programa) -> Paso | None:
@@ -63,7 +98,12 @@ class ProgramaSerializer(serializers.ModelSerializer):
 
     potencia_objetivo_mw = serializers.FloatField(min_value=0)
     duracion_pulso_ms = serializers.IntegerField(min_value=1)
+    perfil_periodo = serializers.ChoiceField(
+        choices=TipoPeriodo.choices, default=TipoPeriodo.CONSTANTE
+    )
     desplazamiento_um = serializers.FloatField(min_value=0.001)
+    incremento_um = serializers.FloatField(required=False, allow_null=True)
+    factor = serializers.FloatField(min_value=0.001, required=False, allow_null=True)
     criterio_fin = serializers.ChoiceField(choices=CriterioFin.choices)
     distancia_mm = serializers.FloatField(min_value=0, required=False, allow_null=True)
     pulsos = serializers.IntegerField(min_value=0, required=False, allow_null=True)
@@ -78,9 +118,13 @@ class ProgramaSerializer(serializers.ModelSerializer):
             "nombre",
             "descripcion",
             "tipo_red",
+            "version",
             "potencia_objetivo_mw",
             "duracion_pulso_ms",
+            "perfil_periodo",
             "desplazamiento_um",
+            "incremento_um",
+            "factor",
             "criterio_fin",
             "distancia_mm",
             "pulsos",
@@ -89,7 +133,7 @@ class ProgramaSerializer(serializers.ModelSerializer):
             "creado_por",
             "actualizado_en",
         ]
-        read_only_fields = ["codigo", "validado", "activo", "creado_por", "actualizado_en"]
+        read_only_fields = ["codigo", "version", "validado", "activo", "creado_por", "actualizado_en"]
         extra_kwargs = {"tipo_red": {"required": False}, "descripcion": {"required": False}}
 
     # ── lectura ─────────────────────────────────────────────────────────────
@@ -104,28 +148,33 @@ class ProgramaSerializer(serializers.ModelSerializer):
             El diccionario con los campos de la API.
         """
         paso = _paso_de_grabado(programa)
-        desplazamiento = programa.periodo.periodo_base if programa.periodo else 0.0
+        periodo = programa.periodo
+        desplazamiento = periodo.periodo_base if periodo else 0.0
 
         if programa.criterio_fin == CriterioFin.CANT_MARCAS and programa.valor_criterio_fin:
             pulsos = int(programa.valor_criterio_fin)
-        elif programa.criterio_fin == CriterioFin.LONGITUD and desplazamiento:
-            pulsos = math.floor((programa.valor_criterio_fin or 0) * 1000 / desplazamiento)
+        elif programa.criterio_fin == CriterioFin.LONGITUD and periodo:
+            pulsos = _marcas_hasta(periodo, (programa.valor_criterio_fin or 0) * 1000)
         else:
             pulsos = paso.repeticiones if paso else 0
 
         if programa.criterio_fin == CriterioFin.LONGITUD:
             distancia = programa.valor_criterio_fin or 0.0
         else:
-            distancia = pulsos * desplazamiento / 1000
+            distancia = periodo.distancia_acumulada(pulsos) / 1000 if periodo else 0.0
 
         return {
             "codigo": programa.codigo,
             "nombre": programa.nombre,
             "descripcion": programa.descripcion,
+            "version": programa.version,
             "tipo_red": programa.tipo_red,
             "potencia_objetivo_mw": round(programa.potencia_objetivo * 1000, 6),
             "duracion_pulso_ms": paso.tiempo_de_pulso if paso else 0,
+            "perfil_periodo": periodo.tipo if periodo else TipoPeriodo.CONSTANTE,
             "desplazamiento_um": desplazamiento,
+            "incremento_um": periodo.incremento if periodo else None,
+            "factor": periodo.factor if periodo else None,
             "criterio_fin": programa.criterio_fin,
             "distancia_mm": round(distancia, 6),
             "pulsos": pulsos,
@@ -158,7 +207,7 @@ class ProgramaSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError(
                 {"criterio_fin": "Desde la API solo se admiten LONGITUD, CANT_MARCAS y MANUAL."}
             )
-        desplazamiento = datos["desplazamiento_um"]
+        periodo = self._periodo_de(datos)
         distancia, pulsos = datos.get("distancia_mm"), datos.get("pulsos")
 
         if criterio == CriterioFin.LONGITUD:
@@ -166,17 +215,43 @@ class ProgramaSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError(
                     {"distancia_mm": "El criterio LONGITUD necesita la distancia total."}
                 )
-            datos["pulsos"] = math.floor(distancia * 1000 / desplazamiento)
+            try:
+                datos["pulsos"] = _marcas_hasta(periodo, distancia * 1000)
+            except ValueError as exc:
+                raise serializers.ValidationError({"perfil_periodo": str(exc)}) from exc
         elif criterio == CriterioFin.CANT_MARCAS:
             if not pulsos:
                 raise serializers.ValidationError(
                     {"pulsos": "El criterio CANT_MARCAS necesita la cantidad de pulsos."}
                 )
-            datos["distancia_mm"] = pulsos * desplazamiento / 1000
+            if periodo.calcular_distancia(pulsos - 1) <= 0:
+                raise serializers.ValidationError(
+                    {"perfil_periodo": "El periodo deja de ser positivo antes de la ultima marca."}
+                )
+            datos["distancia_mm"] = periodo.distancia_acumulada(pulsos) / 1000
         else:  # MANUAL: termina cuando el operador decide
             datos["pulsos"] = pulsos or 0
             datos["distancia_mm"] = distancia
         return datos
+
+    @staticmethod
+    def _periodo_de(datos: dict) -> Periodo:
+        """Arma, sin guardar, el perfil de periodo que describen los datos.
+
+        Raises:
+            ValidationError: Si faltan o sobran parametros para el perfil elegido.
+        """
+        periodo = Periodo(
+            tipo=datos.get("perfil_periodo", TipoPeriodo.CONSTANTE),
+            periodo_base=datos["desplazamiento_um"],
+            incremento=datos.get("incremento_um"),
+            factor=datos.get("factor"),
+        )
+        try:
+            periodo.clean()
+        except DjangoValidationError as exc:
+            raise serializers.ValidationError({"perfil_periodo": exc.messages}) from exc
+        return periodo
 
     def _valor_criterio(self, datos: dict) -> float | None:
         """Elige que numero se guarda como valor del criterio de fin."""
@@ -185,6 +260,17 @@ class ProgramaSerializer(serializers.ModelSerializer):
         if datos["criterio_fin"] == CriterioFin.CANT_MARCAS:
             return float(datos["pulsos"])
         return None
+
+    def _guardar_periodo(self, periodo: Periodo | None, datos: dict) -> Periodo:
+        """Crea o actualiza el perfil de periodo con los datos validados."""
+        if periodo is None:
+            periodo = Periodo()
+        periodo.tipo = datos.get("perfil_periodo", TipoPeriodo.CONSTANTE)
+        periodo.periodo_base = datos["desplazamiento_um"]
+        periodo.incremento = datos.get("incremento_um")
+        periodo.factor = datos.get("factor")
+        periodo.save()
+        return periodo
 
     @transaction.atomic
     def create(self, datos: dict) -> Programa:
@@ -196,9 +282,7 @@ class ProgramaSerializer(serializers.ModelSerializer):
         Returns:
             El programa creado.
         """
-        periodo = Periodo.objects.create(
-            tipo=TipoPeriodo.CONSTANTE, periodo_base=datos["desplazamiento_um"]
-        )
+        periodo = self._guardar_periodo(None, datos)
         usuario = self.context["request"].user
         programa = Programa.objects.create(
             codigo=_siguiente_codigo(),
@@ -233,15 +317,10 @@ class ProgramaSerializer(serializers.ModelSerializer):
         Returns:
             El programa actualizado.
         """
-        if programa.periodo is None:
-            programa.periodo = Periodo.objects.create(
-                tipo=TipoPeriodo.CONSTANTE, periodo_base=datos["desplazamiento_um"]
-            )
-        else:
-            programa.periodo.tipo = TipoPeriodo.CONSTANTE
-            programa.periodo.periodo_base = datos["desplazamiento_um"]
-            programa.periodo.incremento = programa.periodo.factor = None
-            programa.periodo.save()
+        programa.periodo = self._guardar_periodo(programa.periodo, datos)
+        # Cada edicion es una version nueva: los ensayos ya grabados citan el
+        # codigo, y la version dice con que receta se corrio cada tanda.
+        programa.version += 1
 
         programa.nombre = datos["nombre"]
         programa.descripcion = datos.get("descripcion", programa.descripcion)

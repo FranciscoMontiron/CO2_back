@@ -442,3 +442,86 @@ def test_el_listado_de_usuarios_no_expone_la_contrasena(como, usuario):
     assert r.status_code == 200
     assert all("password" not in u for u in r.data)
     assert r.data[0]["rol"] == TipoRol.OPERADOR
+
+
+# ── Programas: perfiles de periodo y versiones ───────────────────────────────
+
+
+@pytest.mark.django_db
+def test_crear_un_perfil_lineal_deriva_los_pulsos_acumulando(como, investigador):
+    """Con periodo 500 + 100 n, en 2 mm entran 3 marcas (500 + 600 + 700 = 1800 um)."""
+    datos = _datos_programa(
+        perfil_periodo="LINEAL", desplazamiento_um=500.0, incremento_um=100.0, distancia_mm=2.0
+    )
+    r = como(investigador).post("/api/programas/", datos, format="json")
+
+    assert r.status_code == 201, r.data
+    assert r.data["pulsos"] == 3
+    assert r.data["perfil_periodo"] == "LINEAL"
+    assert r.data["incremento_um"] == 100.0
+    assert Programa.objects.get(codigo=r.data["codigo"]).periodo.tipo == "LINEAL"
+
+
+@pytest.mark.django_db
+def test_un_perfil_exponencial_por_pulsos_deriva_la_distancia(como, investigador):
+    """3 marcas a 500 um con factor 2 son 500 + 1000 + 2000 = 3,5 mm."""
+    datos = _datos_programa(
+        perfil_periodo="EXPONENCIAL",
+        desplazamiento_um=500.0,
+        factor=2.0,
+        criterio_fin=CriterioFin.CANT_MARCAS,
+        distancia_mm=None,
+        pulsos=3,
+    )
+    r = como(investigador).post("/api/programas/", datos, format="json")
+
+    assert r.status_code == 201, r.data
+    assert r.data["distancia_mm"] == pytest.approx(3.5)
+
+
+@pytest.mark.django_db
+def test_el_perfil_lineal_exige_incremento_en_la_api(como, investigador):
+    """Sin incremento seria una red uniforme creyendo que es chirpeada."""
+    r = como(investigador).post(
+        "/api/programas/", _datos_programa(perfil_periodo="LINEAL"), format="json"
+    )
+    assert r.status_code == 400
+    assert "perfil_periodo" in r.data
+
+
+@pytest.mark.django_db
+def test_un_perfil_lineal_que_se_hace_negativo_se_rechaza(como, investigador):
+    """Un periodo <= 0 no se puede grabar: el motor no avanza hacia atras."""
+    datos = _datos_programa(
+        perfil_periodo="LINEAL", desplazamiento_um=500.0, incremento_um=-200.0, distancia_mm=10.0
+    )
+    r = como(investigador).post("/api/programas/", datos, format="json")
+    assert r.status_code == 400
+    assert "perfil_periodo" in r.data
+
+
+@pytest.mark.django_db
+def test_cambiar_a_constante_limpia_los_parametros_del_perfil(como, investigador):
+    """Volver a CONSTANTE no deja el incremento de la version anterior."""
+    c = como(investigador)
+    lineal = _datos_programa(perfil_periodo="LINEAL", incremento_um=10.0)
+    codigo = c.post("/api/programas/", lineal, format="json").data["codigo"]
+
+    r = c.put(f"/api/programas/{codigo}/", _datos_programa(), format="json")
+
+    assert r.status_code == 200, r.data
+    assert r.data["perfil_periodo"] == "CONSTANTE"
+    assert r.data["incremento_um"] is None
+
+
+@pytest.mark.django_db
+def test_cada_edicion_sube_la_version(como, investigador):
+    """La version dice con que receta se corrio cada tanda de ensayos."""
+    c = como(investigador)
+    creado = c.post("/api/programas/", _datos_programa(), format="json")
+    assert creado.data["version"] == 1
+
+    r = c.put(f"/api/programas/{creado.data['codigo']}/", _datos_programa(nombre="B"), format="json")
+
+    assert r.data["version"] == 2
+    assert Programa.objects.get(codigo=creado.data["codigo"]).version == 2

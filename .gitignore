@@ -32,3 +32,6 @@ htmlcov/
 .idea/
 Thumbs.db
 .DS_Store
+
+# Hardware
+controller/hardware_config.json

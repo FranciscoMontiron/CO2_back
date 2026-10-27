@@ -9,10 +9,13 @@
 
 FROM python:3.12-slim-bookworm
 
+# LG_WD: lgpio crea un archivo de notificacion en el directorio de trabajo al
+# importarse, y /app no es escribible para el usuario co2.
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
-    PIP_DISABLE_PIP_VERSION_CHECK=1
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    LG_WD=/tmp
 
 WORKDIR /app
 

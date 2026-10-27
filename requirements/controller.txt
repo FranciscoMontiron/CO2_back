@@ -7,9 +7,11 @@ pydantic==2.9.1
 pydantic-settings==2.5.2
 
 # ── Acceso a GPIO ────────────────────────────────────────────────────────────
-# Solo tiene sentido sobre la Pi 5 real. En la simulacion se usa el HAL
-# simulado (CONTROLLER_HAL=simulado), por eso queda comentado: instalarlo en
-# el contenedor emulado no aporta y complica el build.
+# Solo se instalan en arm64 (la Pi 5, o su simulacion). En una PC x86 el
+# marcador las saltea: ahi se usa el HAL simulado.
 #
-# En la Pi 5 el RPi.GPIO clasico NO funciona (chip RP1). Usar:
-# gpiod==2.2.1 ; platform_machine == "aarch64"
+# En la Pi 5 el RPi.GPIO clasico NO funciona (chip RP1). gpiozero necesita
+# lgpio como backend para hablar con el RP1; gpiod es el acceso de bajo nivel.
+gpiozero==2.0.1 ; platform_machine == "aarch64"
+lgpio==0.2.2.0 ; platform_machine == "aarch64"
+gpiod==2.2.1 ; platform_machine == "aarch64"

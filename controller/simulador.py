@@ -23,8 +23,11 @@ from __future__ import annotations
 import math
 import random
 
+from controller.hal_base import HalBase
 from controller import protocolo as p
+import logging
 
+logger = logging.getLogger("controller.simulador")
 # ── Constantes del modelo ────────────────────────────────────────────────────
 
 AMBIENTE_C = 23.0
@@ -56,7 +59,7 @@ def _relajar(actual: float, objetivo: float, dt: float, tau: float) -> float:
     return actual + (objetivo - actual) * (1 - math.exp(-dt / tau))
 
 
-class HalSimulado:
+class HalSimulado(HalBase):
     """Estado fisico del arreglo de grabado, avanzado en el tiempo."""
 
     def __init__(self, semilla: int | None = None) -> None:
@@ -66,6 +69,7 @@ class HalSimulado:
             semilla: Semilla del ruido. Fijarla hace la simulacion reproducible,
                 que es lo que necesitan las pruebas.
         """
+        super().__init__()
         self._azar = random.Random(semilla)
         # Actuadores: lo que el controlador comanda.
         self.refrigeracion = False
@@ -223,6 +227,16 @@ class HalSimulado:
             else self.posicion_mm + math.copysign(paso, delta)
         )
 
+    def armar_shutter(self) -> None:
+        """Arma el shutter: el haz queda bloqueado y el lazo de potencia cerrado."""
+        self.shutter_armado = True
+        self.shutter_abierto = False
+        logger.info("[HalGpio] Shutter armado (simulado stub)")
+        
+    def desarmar_shutter(self) -> None:
+        """Desarma el shutter: inhabilita su libre opración"""
+        self.shutter_armado = False
+        logger.info("[HalGpio] Shutter desarmado (simulado stub)")
     # ── Interrogador optico ─────────────────────────────────────────────────
 
     def espectro(

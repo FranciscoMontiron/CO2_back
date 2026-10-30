@@ -75,6 +75,11 @@ def boton(accion: str, etiqueta: str) -> dict:
     return {"accion": accion, "etiqueta": etiqueta}
 
 
+def interruptor(estado: dict, encender: dict, apagar: dict) -> dict:
+    """Un boton que apaga si ``estado`` se cumple y enciende si no."""
+    return {"tipo": "interruptor", "estado": estado, "encender": encender, "apagar": apagar}
+
+
 # ── El procedimiento ────────────────────────────────────────────────────────
 
 PASOS_ESTANDAR: list[dict] = [
@@ -110,7 +115,13 @@ PASOS_ESTANDAR: list[dict] = [
         "titulo": "Refrigeración",
         "subtitulo": "Estabilización térmica del láser",
         "fase": "Preparación",
-        "acciones": [boton("encender_refrigeracion", "Encender refrigeración")],
+        "acciones": [
+            interruptor(
+                si("actuadores.refrigeracion"),
+                boton("encender_refrigeracion", "Encender refrigeración"),
+                boton("apagar_refrigeracion", "Apagar refrigeración"),
+            )
+        ],
         "indicadores": [
             {
                 "nombre": "Chiller",

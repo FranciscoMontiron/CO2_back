@@ -10,7 +10,7 @@ from django.core.management import call_command
 from rest_framework.test import APIClient
 
 from comun.enums import TipoRol, TipoValidacion
-from procedimientos.catalogo import validar_condicion, validar_procedimiento
+from procedimientos.catalogo import validar_accion, validar_condicion, validar_procedimiento
 from procedimientos.models import ProcedimientoGuiado, ValidacionPaso
 from procedimientos.semilla import CODIGO_ESTANDAR, PASOS_ESTANDAR, cargar_procedimiento_estandar
 from programas.models import Programa
@@ -331,3 +331,45 @@ def test_paso_1_estandar_se_tilda_con_el_controlador(db):
     assert tipos[0][1] == TipoValidacion.MANUAL
     assert tipos[1][1:] == (TipoValidacion.SENSOR, conectado)
     assert tipos[2][1:] == (TipoValidacion.SENSOR, conectado)
+
+
+def _interruptor(**cambios):
+    """Interruptor de refrigeracion valido."""
+    datos = {
+        "tipo": "interruptor",
+        "estado": {"fuente": "actuadores.refrigeracion", "op": "es_verdadero"},
+        "encender": {"etiqueta": "Encender", "accion": "encender_refrigeracion"},
+        "apagar": {"etiqueta": "Apagar", "accion": "apagar_refrigeracion"},
+    }
+    datos.update(cambios)
+    return datos
+
+
+def test_interruptor_valido():
+    """Un interruptor declara los dos comandos que puede mandar."""
+    errores, comandos = validar_accion(_interruptor(), "a")
+    assert errores == []
+    assert comandos == {"encender_refrigeracion", "apagar_refrigeracion"}
+
+
+@pytest.mark.parametrize(
+    ("cambios", "fragmento"),
+    [
+        ({"estado": None}, "necesita la condicion"),
+        ({"apagar": {"etiqueta": "X", "accion": "emergencia"}}, "no esta permitido"),
+        ({"encender": {"etiqueta": "Ir", "accion": "iniciar_real"}}, "iniciar un grabado"),
+        ({"tipo": "perilla"}, "no existe"),
+    ],
+)
+def test_interruptor_invalido(cambios, fragmento):
+    """Un interruptor sin estado, con un comando prohibido o que inicie un grabado no pasa."""
+    errores, _ = validar_accion(_interruptor(**cambios), "a")
+    assert any(fragmento in e for e in errores), errores
+
+
+def test_paso_2_estandar_usa_interruptor(db):
+    """La refrigeracion del procedimiento estandar se enciende y apaga con un solo boton."""
+    proc, _ = cargar_procedimiento_estandar()
+    (accion,) = proc.pasos.get(orden=2).acciones
+    assert accion["tipo"] == "interruptor"
+    assert accion["apagar"]["accion"] == "apagar_refrigeracion"

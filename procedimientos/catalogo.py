@@ -15,7 +15,10 @@ Indicador (chip de hardware)
     siempre. El texto admite ``{fuente}`` o ``{fuente:decimales}``.
 
 Accion
-    ``{"etiqueta": "Encender refrigeracion", "accion": "encender_refrigeracion"}``.
+    Boton: ``{"etiqueta": "Encender refrigeracion", "accion": "encender_refrigeracion"}``.
+    Interruptor: ``{"tipo": "interruptor", "estado": <cond>, "encender": <boton>,
+    "apagar": <boton>}``. Un solo boton que manda ``apagar`` si la condicion de
+    ``estado`` se cumple y ``encender`` si no.
 
 Salida
     ``{"etiqueta": "Fabricar otra PHLPG", "destino": 6}``: el numero de paso al que va.
@@ -194,6 +197,48 @@ def validar_indicador(indicador: Any, donde: str) -> list[str]:
     return errores
 
 
+def _validar_boton(boton: Any, donde: str) -> tuple[list[str], str | None]:
+    """Valida un boton ``{etiqueta, accion}``; devuelve errores y el comando."""
+    if not isinstance(boton, dict) or boton.get("accion") not in ACCIONES:
+        return [f"{donde}: el comando no esta permitido en un paso."], None
+    if not str(boton.get("etiqueta", "")).strip():
+        return [f"{donde}: falta la etiqueta del boton."], boton["accion"]
+    return [], boton["accion"]
+
+
+def validar_accion(accion: Any, donde: str) -> tuple[list[str], set[str]]:
+    """Valida un boton o un interruptor.
+
+    Returns:
+        Los errores y los comandos que puede mandar.
+    """
+    if not isinstance(accion, dict):
+        return [f"{donde}: la accion tiene que ser un objeto."], set()
+    tipo = accion.get("tipo", "boton")
+    if tipo == "boton":
+        errores, comando = _validar_boton(accion, donde)
+        return errores, {comando} if comando else set()
+    if tipo != "interruptor":
+        return [f"{donde}: el tipo «{tipo}» no existe (boton o interruptor)."], set()
+
+    errores: list[str] = []
+    comandos: set[str] = set()
+    if accion.get("estado") is None:
+        errores.append(f"{donde}: el interruptor necesita la condicion que dice si esta encendido.")
+    else:
+        errores += validar_condicion(accion["estado"], f"{donde}, estado")
+    for lado in ("encender", "apagar"):
+        errores_lado, comando = _validar_boton(accion.get(lado), f"{donde}, {lado}")
+        errores += errores_lado
+        if comando in (INICIAR_REAL, INICIAR_PRUEBA):
+            errores.append(
+                f"{donde}, {lado}: iniciar un grabado no puede ser parte de un interruptor."
+            )
+        if comando:
+            comandos.add(comando)
+    return errores, comandos
+
+
 def validar_procedimiento(pasos: list[dict]) -> list[str]:
     """Valida un procedimiento completo, tal como llega a la API.
 
@@ -230,14 +275,11 @@ def validar_procedimiento(pasos: list[dict]) -> list[str]:
 
         for i, accion in enumerate(paso.get("acciones") or [], 1):
             donde = f"{lugar}, accion {i}"
-            if not isinstance(accion, dict) or accion.get("accion") not in ACCIONES:
-                errores.append(f"{donde}: el comando no esta permitido en un paso.")
-                continue
-            if not str(accion.get("etiqueta", "")).strip():
-                errores.append(f"{donde}: falta la etiqueta del boton.")
-            if accion["accion"] == INICIAR_REAL:
+            errores_accion, comandos = validar_accion(accion, donde)
+            errores += errores_accion
+            if INICIAR_REAL in comandos:
                 ultimo_iniciar = n
-            if accion["accion"] == p.APAGAR:
+            if p.APAGAR in comandos:
                 ultimo_apagar = n
 
         if paso.get("condicion_avance") is not None:

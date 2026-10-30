@@ -1,0 +1,9 @@
+{
+  "componentes": {
+    "shutter_principal": {
+      "tipo": "SHUTTER_GPIO",
+      "pines": {},
+      "estado": "Vigente"
+    }
+  }
+}

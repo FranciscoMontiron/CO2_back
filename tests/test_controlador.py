@@ -45,6 +45,8 @@ async def test_el_bus_publica_la_apertura_de_cada_pulso_corto(monkeypatch):
             if json.loads(mensaje)["actuadores"]["shutter_abierto"]
         ]
         assert {mensaje["ejecucion"]["pulso"] for mensaje in abiertos} == {0, 1}
+        # El dashboard muestra el tiempo de pulso del programa en ejecucion.
+        assert {mensaje["ejecucion"]["duracion_pulso_ms"] for mensaje in abiertos} == {100}
         assert json.loads(redis.publicados[-1][1])["actuadores"]["shutter_abierto"] is False
     finally:
         parar.set()

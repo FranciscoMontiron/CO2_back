@@ -431,6 +431,8 @@ class Maquina:
             "modo": cmd.get("modo", "REAL"),
             "pulso": 0,
             "pulsos": programa["pulsos"] or 0,
+            # Tiempo que el shutter queda abierto en cada marca (tiempo de pulso).
+            "duracion_pulso_ms": programa["duracion_pulso_ms"],
             "progreso": 0.0,
             "distancia_mm": 0.0,
         }

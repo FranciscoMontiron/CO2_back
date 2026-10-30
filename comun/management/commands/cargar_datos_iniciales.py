@@ -33,6 +33,7 @@ from comun.enums import (
 from comun.enums import VariableMonitoreada as Var
 from fabricacion.models import Lote, Marca, Procedimiento, Red
 from operacion.models import Configuracion, EventoEmergencia, Umbral
+from procedimientos.semilla import cargar_procedimiento_estandar
 from programas.models import Programa
 from programas.serializers import ProgramaSerializer
 from trazabilidad.models import RegistroDeFabricacion
@@ -76,6 +77,9 @@ PROGRAMAS_EJEMPLO = [
     ("Programa B", 8.0, 350, 400.0, CriterioFin.LONGITUD, 8.0, None),
     ("Programa C", 12.0, 500, 600.0, CriterioFin.CANT_MARCAS, None, 25),
 ]
+
+# Programas que usan el procedimiento guiado estandar.
+PROGRAMAS_CON_PROCEDIMIENTO_ESTANDAR = ["Programa A", "Programa B", "Programa C"]
 
 # Ensayos de ejemplo: (lote, red, programa, operador, estado, estado de la red,
 # hace cuantas horas, minutos que duro, notas, espectro). El espectro es "real"
@@ -125,6 +129,7 @@ class Command(BaseCommand):
         self._cargar_configuracion()
         if opciones["con_ejemplo"]:
             self._cargar_ejemplo()
+        self._cargar_procedimientos()
         self.stdout.write(self.style.SUCCESS("Carga inicial completa."))
 
     def _cargar_roles(self) -> None:
@@ -165,6 +170,21 @@ class Command(BaseCommand):
             config.activar()
         if creada:
             self.stdout.write(f"  configuracion creada con {len(UMBRALES)} umbrales")
+
+    def _cargar_procedimientos(self) -> None:
+        """Crea el procedimiento guiado estandar y se lo asigna a los programas A, B y C.
+
+        Solo se asigna a los programas que todavia no tienen uno: si alguien ya
+        les eligio otro procedimiento, la carga no lo pisa.
+        """
+        procedimiento, creado = cargar_procedimiento_estandar()
+        if creado:
+            self.stdout.write(f"  procedimiento guiado creado: {procedimiento}")
+        asignados = Programa.objects.filter(
+            nombre__in=PROGRAMAS_CON_PROCEDIMIENTO_ESTANDAR, procedimiento__isnull=True
+        ).update(procedimiento=procedimiento)
+        if asignados:
+            self.stdout.write(f"  procedimiento asignado a {asignados} programas")
 
     # ── datos de demostracion ───────────────────────────────────────────────
 

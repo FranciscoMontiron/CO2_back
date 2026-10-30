@@ -21,6 +21,7 @@ from operacion.views import (
     HardwareConfigView,
     UmbralViewSet,
 )
+from procedimientos.views import ProcedimientoGuiadoViewSet
 from programas.views import ProgramaViewSet
 from trazabilidad.views import EnsayoViewSet
 from usuarios.views import AuditoriaViewSet, IniciarSesionView, UsuarioViewSet, YoView
@@ -28,6 +29,7 @@ from usuarios.views import AuditoriaViewSet, IniciarSesionView, UsuarioViewSet, 
 router = DefaultRouter()
 router.register("ensayos", EnsayoViewSet, basename="ensayo")
 router.register("programas", ProgramaViewSet, basename="programa")
+router.register("procedimientos", ProcedimientoGuiadoViewSet, basename="procedimiento")
 router.register("alertas", AlertaViewSet, basename="alerta")
 router.register("emergencias", EventoEmergenciaViewSet, basename="emergencia")
 router.register("umbrales", UmbralViewSet, basename="umbral")

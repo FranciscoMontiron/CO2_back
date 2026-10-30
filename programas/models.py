@@ -127,6 +127,15 @@ class Programa(models.Model):
         null=True,
         blank=True,
     )
+    procedimiento = models.ForeignKey(
+        "procedimientos.ProcedimientoGuiado",
+        verbose_name="procedimiento guiado",
+        on_delete=models.PROTECT,
+        related_name="programas",
+        null=True,
+        blank=True,
+        help_text="La checklist que sigue el operador en «Nuevo ensayo» con este programa.",
+    )
     validado = models.BooleanField("validado", default=False)
     activo = models.BooleanField("activo", default=True)
     creado_por = models.ForeignKey(

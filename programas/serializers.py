@@ -16,6 +16,7 @@ Campo de la API            Donde vive en el modelo
 ``pulsos``                 ``Paso`` de grabado: ``repeticiones``
 ``distancia_mm``           ``valor_criterio_fin`` si el criterio es LONGITUD
 ``potencia_objetivo_mw``   ``Programa.potencia_objetivo``, guardada en W
+``procedimiento``          ``Programa.procedimiento`` (codigo del procedimiento guiado)
 =========================  ================================================
 
 La distancia y la cantidad de pulsos no son independientes: la longitud es la
@@ -35,6 +36,7 @@ from django.db import transaction
 from rest_framework import serializers
 
 from comun.enums import CriterioFin, TipoPeriodo, TipoRed
+from procedimientos.models import ProcedimientoGuiado
 
 from .models import Paso, Periodo, Programa
 
@@ -107,6 +109,12 @@ class ProgramaSerializer(serializers.ModelSerializer):
     criterio_fin = serializers.ChoiceField(choices=CriterioFin.choices)
     distancia_mm = serializers.FloatField(min_value=0, required=False, allow_null=True)
     pulsos = serializers.IntegerField(min_value=0, required=False, allow_null=True)
+    procedimiento = serializers.SlugRelatedField(
+        slug_field="codigo",
+        queryset=ProcedimientoGuiado.objects.filter(activo=True),
+        required=False,
+        allow_null=True,
+    )
     creado_por = serializers.SerializerMethodField()
 
     class Meta:
@@ -128,12 +136,20 @@ class ProgramaSerializer(serializers.ModelSerializer):
             "criterio_fin",
             "distancia_mm",
             "pulsos",
+            "procedimiento",
             "validado",
             "activo",
             "creado_por",
             "actualizado_en",
         ]
-        read_only_fields = ["codigo", "version", "validado", "activo", "creado_por", "actualizado_en"]
+        read_only_fields = [
+            "codigo",
+            "version",
+            "validado",
+            "activo",
+            "creado_por",
+            "actualizado_en",
+        ]
         extra_kwargs = {"tipo_red": {"required": False}, "descripcion": {"required": False}}
 
     # ── lectura ─────────────────────────────────────────────────────────────
@@ -178,6 +194,8 @@ class ProgramaSerializer(serializers.ModelSerializer):
             "criterio_fin": programa.criterio_fin,
             "distancia_mm": round(distancia, 6),
             "pulsos": pulsos,
+            "procedimiento": programa.procedimiento.codigo if programa.procedimiento else None,
+            "procedimiento_nombre": programa.procedimiento.nombre if programa.procedimiento else "",
             "validado": programa.validado,
             "activo": programa.activo,
             "creado_por": self.get_creado_por(programa),
@@ -293,6 +311,7 @@ class ProgramaSerializer(serializers.ModelSerializer):
             criterio_fin=datos["criterio_fin"],
             valor_criterio_fin=self._valor_criterio(datos),
             periodo=periodo,
+            procedimiento=datos.get("procedimiento"),
             creado_por=usuario if usuario.is_authenticated else None,
         )
         Paso.objects.create(
@@ -328,6 +347,8 @@ class ProgramaSerializer(serializers.ModelSerializer):
         programa.potencia_objetivo = datos["potencia_objetivo_mw"] / 1000
         programa.criterio_fin = datos["criterio_fin"]
         programa.valor_criterio_fin = self._valor_criterio(datos)
+        if "procedimiento" in datos:
+            programa.procedimiento = datos["procedimiento"]
         programa.save()
 
         paso = _paso_de_grabado(programa)

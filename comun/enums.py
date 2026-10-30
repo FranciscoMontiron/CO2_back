@@ -62,6 +62,17 @@ class CriterioFin(models.TextChoices):
     MANUAL = "MANUAL", "Manual"
 
 
+class TipoValidacion(models.TextChoices):
+    """Quien confirma una validacion de un paso del procedimiento guiado.
+
+    ``MANUAL`` la tilda el operador; ``SENSOR`` se tilda sola cuando la
+    telemetria cumple la condicion que la acompana.
+    """
+
+    MANUAL = "MANUAL", "Manual"
+    SENSOR = "SENSOR", "Por sensor"
+
+
 class TipoCheckpoint(models.TextChoices):
     """Disparador que origina un punto de control."""
 

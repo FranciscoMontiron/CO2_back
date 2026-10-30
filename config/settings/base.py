@@ -59,6 +59,7 @@ LOCAL_APPS: list[str] = [
     "comun",
     "usuarios",
     "fabricacion",
+    "procedimientos",
     "programas",
     "trazabilidad",
     "operacion",

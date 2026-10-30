@@ -320,3 +320,14 @@ def test_carga_inicial_no_pisa_una_asignacion(db):
     Programa.objects.filter(nombre="Programa B").update(procedimiento=otro)
     call_command("cargar_datos_iniciales", "--con-ejemplo")
     assert Programa.objects.get(nombre="Programa B").procedimiento == otro
+
+
+def test_paso_1_estandar_se_tilda_con_el_controlador(db):
+    """Interrogador y comunicacion se confirman solos con el controlador conectado."""
+    proc, _ = cargar_procedimiento_estandar()
+    validaciones = proc.pasos.get(orden=1).validaciones.order_by("orden")
+    tipos = [(v.texto, v.tipo, v.condicion) for v in validaciones]
+    conectado = {"fuente": "controlador.conectado", "op": "es_verdadero"}
+    assert tipos[0][1] == TipoValidacion.MANUAL
+    assert tipos[1][1:] == (TipoValidacion.SENSOR, conectado)
+    assert tipos[2][1:] == (TipoValidacion.SENSOR, conectado)

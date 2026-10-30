@@ -40,6 +40,9 @@ BOOL, NUM, TEXTO = "bool", "num", "texto"
 # el programa elegido y el ensayo lanzado.
 FUENTES: dict[str, tuple[str, str]] = {
     "estado": (TEXTO, "Estado del sistema (REPOSO, PREPARANDO, LISTO, GRABANDO, EMERGENCIA)"),
+    # Verdadera mientras llega la telemetria. Es lo unico que se puede afirmar
+    # de equipos que todavia no tienen sensor propio (el interrogador optico).
+    "controlador.conectado": (BOOL, "El controlador esta conectado y mandando telemetria"),
     **{f"condiciones.{c.value}": (BOOL, f"Condicion: {c.label}") for c in CondicionSeguridad},
     **{f"variables.{v.value}": (NUM, v.label) for v in VariableMonitoreada},
     "senales.FIBRA_ALINEADA": (BOOL, "Senal: fibra alineada"),

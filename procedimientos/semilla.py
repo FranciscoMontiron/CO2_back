@@ -92,13 +92,17 @@ PASOS_ESTANDAR: list[dict] = [
                 "Colocar la fibra en el arreglo de grabado y tensarla sin exceder el límite "
                 "mecánico.",
             ),
-            manual(
+            # El interrogador no tiene sensor propio todavia: se tildan con la
+            # conexion al controlador, como lo hacia la version anterior del front.
+            sensor(
                 "Interrogador óptico conectado",
                 "Conectar el interrogador óptico al puerto del arreglo y verificar el enlace.",
+                si("controlador.conectado"),
             ),
-            manual(
+            sensor(
                 "Comunicación establecida",
                 "Confirmar que la comunicación óptica se establece antes de continuar.",
+                si("controlador.conectado"),
             ),
         ],
     },

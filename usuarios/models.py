@@ -210,7 +210,7 @@ class RegistroAuditoria(models.Model):
         """
         if self.pk is not None:
             raise ValidationError(
-                "Los registros de auditoria son inmutables (RN010): no se modifican."
+                "Los registros de auditoria son inmutables: no se modifican."
             )
         super().save(*args, **kwargs)
 
@@ -220,4 +220,4 @@ class RegistroAuditoria(models.Model):
         Raises:
             ValidationError: Siempre.
         """
-        raise ValidationError("Los registros de auditoria son inmutables (RN010): no se borran.")
+        raise ValidationError("Los registros de auditoria son inmutables: no se borran.")

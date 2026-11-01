@@ -334,7 +334,7 @@ class Maquina:
         if self.bloqueado:
             raise ComandoRechazadoError("hay un umbral que bloquea los comandos.")
         self.hal.laser = True
-        self._avisar("Laser encendido y lazo de potencia cerrado (RN003). Semaforo en rojo.")
+        self._avisar("Laser encendido y lazo de potencia cerrado. Semaforo en rojo.")
 
     def _apagar_laser(self, _cmd: dict) -> None:
         self._exigir_no(GRABANDO)

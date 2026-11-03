@@ -31,7 +31,7 @@ ISA-101.01 es un documento pago y **no se leyó el texto oficial**. Los principi
 2. **Cinco tonos de estado** (`Tone` en `Telemetria.tsx`):
    - `normal`: estado esperado. Badge con borde gris, sin relleno.
    - `ok`: condición confirmada como correcta (fibra alineada, refrigeración estable). Verde **+ check**, **sin relleno**, para que quede por debajo de `warn` y `alarm`, que sí llevan relleno. Ver "Ajuste: verde para lo correcto".
-   - `activo`: equipo energizado o en marcha (alta tensión activa, láser encendido, shutter abierto, desplazador en curso). **Borde de tarjeta verde y badge con relleno verde.** El relleno lo distingue de `ok`.
+   - `activo`: equipo energizado o en marcha (alta tensión activa, láser encendido, shutter armado, desplazador en curso). **Borde de tarjeta verde y badge con relleno verde.** El relleno lo distingue de `ok`.
    - `warn`: condición anormal que requiere atención. Amarillo **+ triángulo**.
    - `alarm`: variable fuera de su límite configurado. Rojo **+ octógono** en el badge y junto al valor. Pisa al estado del equipo.
 3. **Codificación redundante.** Ningún estado depende solo del color. Los badges llevan texto y, si son anormales, ícono. En la cabecera, cada estado del sistema tiene su propio ícono (reposo, preparación, listo, grabando, sin conexión) y el texto queda en neutro, salvo **LISTO, que va en verde**. El rojo se reserva para emergencia y sin conexión.
@@ -44,7 +44,8 @@ ISA-101.01 es un documento pago y **no se leyó el texto oficial**. Los principi
 Con la pantalla totalmente neutra costaba confirmar de un vistazo que el sistema estaba en condiciones. Se agrega un verde acotado, siguiendo IEC 60073 (verde = condición normal / segura):
 
 - **Condición correcta (`ok`)**: LISTO, Alineada, Estable. Verde sin relleno + ícono de check.
-- **Equipo encendido o en marcha (`activo`)**: láser encendido, alta tensión activa, shutter abierto, desplazador en curso. Borde de tarjeta verde y badge con relleno verde. Fue una decisión explícita del equipo: se prioriza que el operador vea de un vistazo qué está en uso.
+- **Equipo encendido o en marcha (`activo`)**: láser encendido, alta tensión activa, shutter armado, desplazador en curso. Borde de tarjeta verde y badge con relleno verde. Fue una decisión explícita del equipo: se prioriza que el operador vea de un vistazo qué está en uso.
+- **Shutter**: el badge muestra armado (verde, `activo`) o desarmado (gris), y el valor muestra abierto o cerrado en neutro. En el gráfico, abierto/cerrado es una señal escalonada gris, sin color de fondo.
 - Ninguno de los dos lleva relleno en la tarjeta ni animación, para no restarle peso al amarillo y al rojo.
 
 ## Consecuencias

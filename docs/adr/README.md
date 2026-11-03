@@ -19,6 +19,7 @@ sobrevivir a los cambios de opinión.
 | [0008](0008-espectro-guarda-longitudes-de-onda.md) | El espectro guarda sus longitudes de onda | Aceptada (reemplaza la decisión 5 de 0007) |
 | [0009](0009-protocolo-del-bus-y-servicio-de-eventos.md) | Protocolo del bus y servicio de eventos | Aceptada (completa a 0004) |
 | [0010](0010-programa-de-grabado-con-perfil-de-periodo-y-version.md) | Programa de grabado: perfil de período editable y versión por edición | Aceptada |
+| [0011](0011-hmi-alto-rendimiento-isa-101.md) | La interfaz sigue los principios de HMI de alto rendimiento (ISA-101) | Propuesta |
 
 ## Estados
 

@@ -18,7 +18,15 @@ class PasoInline(admin.TabularInline):
 class ProgramaAdmin(admin.ModelAdmin):
     """Programas de grabado."""
 
-    list_display = ("codigo", "nombre", "version", "tipo_red", "validado", "activo")
+    list_display = (
+        "codigo",
+        "nombre",
+        "version",
+        "tipo_red",
+        "procedimiento",
+        "validado",
+        "activo",
+    )
     list_filter = ("tipo_red", "validado", "activo", "criterio_fin")
     search_fields = ("codigo", "nombre")
     inlines = [PasoInline]

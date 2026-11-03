@@ -334,7 +334,7 @@ class Maquina:
         if self.bloqueado:
             raise ComandoRechazadoError("hay un umbral que bloquea los comandos.")
         self.hal.laser = True
-        self._avisar("Laser encendido y lazo de potencia cerrado (RN003). Semaforo en rojo.")
+        self._avisar("Laser encendido y lazo de potencia cerrado. Semaforo en rojo.")
 
     def _apagar_laser(self, _cmd: dict) -> None:
         self._exigir_no(GRABANDO)
@@ -431,6 +431,8 @@ class Maquina:
             "modo": cmd.get("modo", "REAL"),
             "pulso": 0,
             "pulsos": programa["pulsos"] or 0,
+            # Tiempo que el shutter queda abierto en cada marca (tiempo de pulso).
+            "duracion_pulso_ms": programa["duracion_pulso_ms"],
             "progreso": 0.0,
             "distancia_mm": 0.0,
         }

@@ -1,16 +1,21 @@
 """Vistas de sesion, usuarios y auditoria."""
 
-from rest_framework import viewsets
+from rest_framework import status, viewsets
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework_simplejwt.views import TokenObtainPairView
 
 from comun.enums import TipoRol
-from comun.permisos import solo_roles
+from comun.permisos import escritura_solo_para, rol_de, solo_roles
 
 from .models import RegistroAuditoria, Usuario
-from .serializers import AuditoriaSerializer, IniciarSesionSerializer, UsuarioSerializer
+from .serializers import (
+    AuditoriaSerializer,
+    IniciarSesionSerializer,
+    UsuarioAdminSerializer,
+    UsuarioSerializer,
+)
 
 
 class IniciarSesionView(TokenObtainPairView):
@@ -40,17 +45,38 @@ class YoView(APIView):
         return Response(UsuarioSerializer(request.user).data)
 
 
-class UsuarioViewSet(viewsets.ReadOnlyModelViewSet):
-    """Listado de usuarios.
+class UsuarioViewSet(viewsets.ModelViewSet):
+    """ABM de usuarios. Solo el administrador lo gestiona (RF011, RN011).
 
-    Lo lee cualquier usuario autenticado: el front lo muestra en solo lectura a
-    los roles no administradores, y lo usa para armar el filtro por operador.
-    La edicion sigue yendo por el admin de Django hasta que haya pantalla.
+    El listado lo lee cualquier usuario autenticado, en su version reducida: el
+    front lo usa para el filtro por operador. Alta, modificacion y baja son del
+    administrador, que ademas ve los datos completos.
+
+    La baja es logica (``dar_de_baja``): un ``DELETE`` no borra la fila, porque
+    los ensayos y la auditoria del usuario deben seguir siendo atribuibles.
     """
 
     queryset = Usuario.objects.select_related("rol").order_by("username")
-    serializer_class = UsuarioSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [escritura_solo_para(TipoRol.ADMINISTRADOR)]
+    http_method_names = ["get", "post", "patch", "delete", "head", "options"]
+
+    def get_serializer_class(self):
+        """Datos completos para el administrador, reducidos para el resto."""
+        if rol_de(self.request.user) == TipoRol.ADMINISTRADOR:
+            return UsuarioAdminSerializer
+        return UsuarioSerializer
+
+    def destroy(self, request, *args, **kwargs) -> Response:
+        """Da de baja al usuario sin borrarlo. Nadie puede darse de baja a si mismo."""
+        usuario = self.get_object()
+        if usuario.pk == request.user.pk:
+            return Response(
+                {"detail": "No puede darse de baja a si mismo."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if usuario.is_active:
+            usuario.dar_de_baja()
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 class AuditoriaViewSet(viewsets.ReadOnlyModelViewSet):

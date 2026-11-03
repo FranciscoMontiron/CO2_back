@@ -24,7 +24,7 @@ class ProgramaViewSet(viewsets.ModelViewSet):
         """Solo los programas activos: los dados de baja no se ofrecen para grabar."""
         return (
             Programa.objects.filter(activo=True)
-            .select_related("periodo", "creado_por")
+            .select_related("periodo", "creado_por", "procedimiento")
             .prefetch_related("pasos")
             .order_by("codigo")
         )

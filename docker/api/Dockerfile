@@ -45,6 +45,7 @@ COPY --from=builder /venv /venv
 COPY --chown=co2:co2 . /app
 
 RUN mkdir -p /app/staticfiles && chown -R co2:co2 /app/staticfiles
+RUN mkdir -p /app/hardware && chown co2:co2 /app/hardware
 
 USER co2
 EXPOSE 8000 9000

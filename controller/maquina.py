@@ -29,9 +29,9 @@ import time
 from collections.abc import Callable
 from datetime import UTC, datetime
 
-from controller.hal_base import HalBase
 from controller import protocolo as p
-from controller.simulador import TIEMPO_SHUTTER_S, HalSimulado
+from controller.hal_base import HalBase
+from controller.simulador import TIEMPO_SHUTTER_S
 
 logger = logging.getLogger("controller.maquina")
 
@@ -142,6 +142,10 @@ class Maquina:
 
     def condiciones(self) -> dict[str, bool]:
         """Evalua las cuatro condiciones de armado (``CondicionSeguridad``)."""
+        if getattr(self.hal, "modo", None) == "gpio":
+            return dict.fromkeys(
+                ("REFRIGERACION_OK", "AT_ENCENDIDA", "FIBRA_ALINEADA", "SHUTTER_ARMADO"), False
+            )
         lect = self.hal.lecturas()
         lim = {u["variable"]: u for u in self.umbrales}
         caudal_min = lim.get("CAUDAL_REFRIGERANTE", {}).get("valor_min", 2.0)
@@ -197,6 +201,12 @@ class Maquina:
         Args:
             dt: Tiempo simulado transcurrido desde el ciclo anterior, en s.
         """
+        if getattr(self.hal, "modo", None) == "gpio":
+            gestor = self.hal.hardware
+            self._pasar_a(
+                EMERGENCIA if gestor.emergencia else REPOSO if gestor.todo_seguro() else PREPARANDO
+            )
+            return
         self.hal.avanzar(dt)
         self._actualizar_estado()
         if self.hal.alta_tension:
@@ -240,6 +250,30 @@ class Maquina:
             comando: ``{"accion": ..., ...}`` tal como llega por el stream.
         """
         accion = comando.get("accion")
+        if getattr(self.hal, "modo", None) == "gpio":
+            gestor = self.hal.hardware
+            try:
+                if accion == p.COMPONENTE:
+                    resultado = gestor.encolar(comando)
+                    detalle = resultado.get("detalle") or comando["componente"]
+                    self._avisar(f"{resultado['estado']}: {detalle}")
+                elif accion in (p.EMERGENCIA, p.APAGAR):
+                    gestor.detener()
+                    self._pasar_a(EMERGENCIA)
+                    self._avisar("Parada solicitada. Esperando apagado de los componentes.", "warn")
+                elif accion == p.REARMAR:
+                    gestor.rearmar()
+                    self._pasar_a(REPOSO)
+                elif accion == p.APLICAR_HARDWARE:
+                    gestor.intentada = None
+                else:
+                    raise ValueError(
+                        "Modo GPIO manual: opere por componente. "
+                        "El grabado automático requiere configurar sus enlaces e interlocks."
+                    )
+            except ValueError as exc:
+                self._avisar(str(exc), "error")
+            return
         try:
             manejador = self._manejadores()[accion]
         except KeyError:
@@ -572,6 +606,28 @@ class Maquina:
             El mensaje completo, serializable a JSON.
         """
         hal = self.hal
+        if getattr(hal, "modo", None) == "gpio":
+            return {
+                "ts": _ahora_iso(),
+                "modo_hal": "gpio",
+                "estado": self.estado,
+                "condiciones": self.condiciones(),
+                "variables": hal.lecturas(),
+                "senales": hal.senales(),
+                "actuadores": {},
+                "extra": {
+                    "potencia_optica_mw": None,
+                    "sensor_sombra_mw": None,
+                    "temperatura_laser": None,
+                    "frecuencia_hz": None,
+                },
+                "ejecucion": None,
+                "falla": "ninguna",
+                "bloqueado": self.bloqueado,
+                "mensaje": self.mensaje,
+                "hz": hz,
+                "hardware": hal.hardware.estado(),
+            }
         en_curso = self.ejecucion
         frecuencia = 0.0
         if en_curso and en_curso.get("periodo_s"):
@@ -579,6 +635,7 @@ class Maquina:
             frecuencia = round(1 / en_curso["periodo_s"], 2)
         return {
             "ts": _ahora_iso(),
+            "modo_hal": "simulado",
             "estado": self.estado,
             "condiciones": self.condiciones(),
             "variables": hal.lecturas(),

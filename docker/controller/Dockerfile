@@ -28,6 +28,7 @@ RUN groupadd --system --gid 1000 co2 \
 # para poder abrir /dev/gpiochip*.
 
 COPY --chown=co2:co2 controller/ /app/controller/
+RUN mkdir -p /app/hardware && chown co2:co2 /app/hardware
 
 USER co2
 

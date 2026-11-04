@@ -1,8 +1,6 @@
 """Vistas de alertas, emergencias y umbrales."""
 
-import json
 import logging
-from pathlib import Path
 
 import redis
 from django.conf import settings
@@ -34,9 +32,6 @@ from .serializers import (
 )
 
 logger = logging.getLogger("operacion.views")
-
-# Apunta directo al archivo hardware_config.json en el módulo controller
-RUTA_JSON_HARDWARE = Path(__file__).resolve().parent.parent / "controller" / "hardware_config.json"
 
 
 class AlertaViewSet(viewsets.ReadOnlyModelViewSet):
@@ -187,6 +182,15 @@ class ControlComandoView(APIView):
         accion = request.data.get("accion")
         if accion not in protocolo.COMANDOS_SIMPLES:
             return Response({"detail": f"Accion desconocida: {accion}"}, status=400)
+        if settings.CONTROLLER_HAL == "gpio" and accion not in (
+            protocolo.EMERGENCIA,
+            protocolo.REARMAR,
+            protocolo.APAGAR,
+            protocolo.INYECTAR_FALLA,
+        ):
+            return Response(
+                {"detail": "Seleccione el componente en /api/hardware/comandos/."}, status=409
+            )
         datos = {}
         if accion == protocolo.INYECTAR_FALLA:
             if settings.CONTROLLER_HAL != "simulado":
@@ -233,6 +237,14 @@ class ControlIniciarView(APIView):
 
     def post(self, request):
         """Arranca la ejecucion de un programa."""
+        if settings.CONTROLLER_HAL == "gpio":
+            return Response(
+                {
+                    "detail": "Modo GPIO en puesta en marcha manual. "
+                    "Configure y pruebe los componentes antes de habilitar grabado automático."
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
         telemetria = control.ultima_telemetria()
         if telemetria is None or not control.controlador_vivo():
             return _sin_controlador()
@@ -343,28 +355,3 @@ def _crear_registro(programa, modo, usuario, numero_lote=None) -> RegistroDeFabr
     )
     registro.operadores.add(usuario)
     return registro
-
-
-class HardwareConfigView(APIView):
-    def get(self, request):
-        """Lee el archivo hardware_config.json y retorna su contenido al Frontend."""
-        if not RUTA_JSON_HARDWARE.exists():
-            return Response({"actuadores": {}}, status=status.HTTP_200_OK)
-        
-        try:
-            with open(RUTA_JSON_HARDWARE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            return Response(data, status=status.HTTP_200_OK)
-        except Exception as e:
-            return Response({"error": f"Error al leer JSON: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-    def post(self, request):
-        """Recibe el JSON modificado desde React y sobrescribe el archivo en el servidor."""
-        try:
-            nueva_config = request.data
-            with open(RUTA_JSON_HARDWARE, "w", encoding="utf-8") as f:
-                json.dump(nueva_config, f, indent=2, ensure_ascii=False)
-            
-            return Response({"mensaje": "Configuración de hardware actualizada"}, status=status.HTTP_200_OK)
-        except Exception as e:
-            return Response({"error": f"Error al guardar JSON: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)

@@ -9,6 +9,10 @@ conectado a la API REST y a la telemetría por WebSocket.
 **Para levantar el proyecto completo desde cero, seguir [Puesta en marcha](#puesta-en-marcha).**
 El Docker Compose de este repositorio construye y levanta tanto el back como el front.
 
+**Componentes físicos (GPIO):** seguir la [guía de operación manual por componente](docs/componentes-v2.md).
+Incluye drivers soportados, configuración JSON, alta/baja aplicada, cola de órdenes
+y pruebas en la Pi. En esta etapa el grabado automático permanece disponible en simulación.
+
 ---
 
 ## Estado actual

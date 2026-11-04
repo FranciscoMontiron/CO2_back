@@ -30,11 +30,11 @@ import signal
 import time
 from pathlib import Path
 
-from controller.rpi import HalGpio
 import redis.asyncio as redis
 
 from controller import protocolo as p
 from controller.maquina import Maquina
+from controller.rpi import HalGpio
 from controller.simulador import HalSimulado
 
 logging.basicConfig(
@@ -133,19 +133,27 @@ async def publicar_telemetria(cliente: redis.Redis, maquina: Maquina, parar: asy
         await asyncio.sleep(0.05)
 
 
-async def escuchar_comandos(cliente: redis.Redis, maquina: Maquina, parar: asyncio.Event) -> None:
+async def escuchar_comandos(
+    cliente: redis.Redis, maquina: Maquina, parar: asyncio.Event, cursor=None
+) -> None:
     """Lee comandos del stream y se los pasa a la maquina.
 
-    Arranca desde ``$``: solo comandos que lleguen **despues** de que el proceso
-    arranco. Un controlador que se reinicia no puede ejecutar ordenes viejas que
+    Captura el último ID: solo comandos posteriores al arranque.
+    Un controlador que se reinicia no puede ejecutar ordenes viejas que
     quedaron en el stream, como encender un laser que alguien pidio hace una hora.
 
     Args:
         cliente: Conexion a la base de pub/sub.
         maquina: La maquina de estados.
         parar: Evento de apagado.
+        cursor: Último ID capturado antes de anunciar disponibilidad; opcional en pruebas.
     """
-    ultimo_id = "$"
+    # Capturar una vez el final: reutilizar '$' después de un timeout pierde
+    # comandos que llegan entre dos XREAD. No se reproducen órdenes antiguas.
+    if cursor is None:
+        ultimos = await cliente.xrevrange(p.STREAM_COMANDOS, count=1)
+        cursor = ultimos[0][0] if ultimos else "0-0"
+    ultimo_id = cursor
     while not parar.is_set():
         try:
             respuesta = await cliente.xread({p.STREAM_COMANDOS: ultimo_id}, block=1000, count=10)
@@ -160,6 +168,9 @@ async def escuchar_comandos(cliente: redis.Redis, maquina: Maquina, parar: async
                     comando = json.loads(campos[b"datos"])
                 except (KeyError, json.JSONDecodeError):
                     logger.warning("Comando mal formado: %r", campos)
+                    continue
+                if not isinstance(comando, dict):
+                    logger.warning("El comando no es un objeto")
                     continue
                 logger.info("comando: %s", comando.get("accion"))
                 await maquina.manejar(comando)
@@ -228,18 +239,33 @@ async def main() -> None:
 
     # Selecciona la instancia inicial según la variable de entorno
     if HAL == "simulado":
-        halActivo = HalSimulado()
+        hal_activo = HalSimulado()
     elif HAL == "gpio":
-        halActivo = HalGpio()
+        hal_activo = HalGpio()
+    else:
+        raise ValueError(f"CONTROLLER_HAL desconocido: {HAL}")
 
     cola: asyncio.Queue = asyncio.Queue()
     maquina = Maquina(
-        halActivo, emitir=lambda t, d: cola.put_nowait((t, d)), velocidad=VELOCIDAD
+        hal_activo,
+        emitir=lambda t, d: cola.put_nowait((t, d)),
+        velocidad=VELOCIDAD if HAL == "simulado" else 1,
     )
+    if HAL == "gpio":
+        hal_activo.hardware.emitir = lambda t, d: cola.put_nowait((t, d))
 
-    latido = redis.Redis.from_url(f"{REDIS_URL}/{REDIS_DB_HEARTBEAT}")
-    bus = redis.Redis.from_url(f"{REDIS_URL}/{REDIS_DB_PUBSUB}")
+    latido = redis.Redis.from_url(
+        f"{REDIS_URL}/{REDIS_DB_HEARTBEAT}", socket_timeout=2, socket_connect_timeout=2
+    )
+    bus = redis.Redis.from_url(
+        f"{REDIS_URL}/{REDIS_DB_PUBSUB}", socket_timeout=2, socket_connect_timeout=2
+    )
+    # Antes de publicar heartbeat: no saltar órdenes aceptadas durante arranque.
+    ultimos = await bus.xrevrange(p.STREAM_COMANDOS, count=1)
+    cursor = ultimos[0][0] if ultimos else "0-0"
+    await bus.delete(p.CLAVE_HARDWARE)
     parar = asyncio.Event()
+    parar_eventos = asyncio.Event()
 
     bucle = asyncio.get_running_loop()
     for sig in (signal.SIGTERM, signal.SIGINT):
@@ -249,11 +275,26 @@ async def main() -> None:
         asyncio.create_task(publicar_heartbeat(latido, parar)),
         asyncio.create_task(lazo(maquina, parar)),
         asyncio.create_task(publicar_telemetria(bus, maquina, parar)),
-        asyncio.create_task(escuchar_comandos(bus, maquina, parar)),
-        asyncio.create_task(despachar_eventos(bus, cola, parar)),
+        asyncio.create_task(escuchar_comandos(bus, maquina, parar, cursor)),
         asyncio.create_task(leer_configuracion(bus, maquina, parar)),
     ]
-    await parar.wait()
+    tarea_eventos = asyncio.create_task(despachar_eventos(bus, cola, parar_eventos))
+    if HAL == "gpio":
+        tareas.append(asyncio.create_task(hal_activo.hardware.correr(parar)))
+        tareas.append(asyncio.create_task(publicar_hardware(bus, hal_activo.hardware, parar)))
+    espera_parada = asyncio.create_task(parar.wait())
+    terminadas, _ = await asyncio.wait(
+        [*tareas, tarea_eventos, espera_parada], return_when=asyncio.FIRST_COMPLETED
+    )
+    fallo = next(
+        (
+            t.exception()
+            for t in terminadas
+            if t is not espera_parada and not t.cancelled() and t.exception()
+        ),
+        None,
+    )
+    parar.set()
 
     logger.info("Senal de apagado recibida, cerrando")
     # Apagado ordenado del hardware: shutter, laser y alta tension, manteniendo
@@ -261,14 +302,41 @@ async def main() -> None:
     maquina.hal.shutter_abierto = False
     maquina.hal.laser = False
     maquina.hal.alta_tension = False
-    await asyncio.wait(tareas, timeout=3)
+    await asyncio.wait(tareas, timeout=8)
     for tarea in tareas:
         tarea.cancel()
+    espera_parada.cancel()
+    await asyncio.gather(*tareas, espera_parada, return_exceptions=True)
+    # El apagado físico puede emitir resultados después de recibir SIGTERM.
+    parar_eventos.set()
+    try:
+        await asyncio.wait_for(tarea_eventos, timeout=3)
+    except TimeoutError:
+        logger.error("No se pudieron despachar todos los eventos al apagar")
     await latido.delete(CLAVE_HEARTBEAT)
     await latido.aclose()
     await bus.aclose()
     ARCHIVO_VIVO.unlink(missing_ok=True)
     logger.info("Controlador detenido")
+    if fallo:
+        raise fallo
+
+
+async def publicar_hardware(cliente, gestor, parar):
+    """Publica caché de hardware y resultados; Redis nunca llama a los drivers."""
+    while not parar.is_set():
+        if time.monotonic() - gestor._ciclo > 5:
+            gestor.detener()
+            raise RuntimeError("El ciclo de hardware dejó de avanzar.")
+        try:
+            await cliente.setex(
+                p.CLAVE_HARDWARE, p.TTL_TELEMETRIA, json.dumps(gestor.estado(), allow_nan=False)
+            )
+        except redis.RedisError:
+            # Sin comunicación se invalida cualquier orden física pendiente.
+            gestor.detener()
+            logger.exception("Se perdió el bus del hardware; parada solicitada")
+        await asyncio.sleep(0.2)
 
 
 if __name__ == "__main__":

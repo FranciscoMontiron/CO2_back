@@ -36,6 +36,7 @@ from fabricacion.models import Marca
 from operacion import control
 from operacion.models import Alerta, Configuracion, EventoEmergencia
 from trazabilidad.models import RegistroDeFabricacion
+from usuarios.models import RegistroAuditoria, Usuario
 
 logger = logging.getLogger("eventos")
 
@@ -170,7 +171,23 @@ def al_abortar(datos: dict) -> None:
         registro.red.save(update_fields=["estado"])
 
 
+def al_hardware(datos: dict) -> None:
+    """Persiste el resultado de una orden física sin confundirlo con su recepción."""
+    usuario = Usuario.objects.filter(username=datos.get("usuario")).first()
+    RegistroAuditoria.objects.get_or_create(
+        entidad="resultado_hardware",
+        codigo_entidad=datos["id"],
+        defaults={
+            "accion": "COMANDAR",
+            "usuario": usuario,
+            "critica": True,
+            "valor_nuevo": json.dumps(datos, ensure_ascii=False),
+        },
+    )
+
+
 MANEJADORES = {
+    p.EV_HARDWARE: al_hardware,
     p.EV_MARCA: al_grabar_marca,
     p.EV_CHECKPOINT: al_registrar_checkpoint,
     p.EV_ALERTA: al_exceder_umbral,

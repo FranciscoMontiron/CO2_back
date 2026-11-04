@@ -551,6 +551,9 @@ class RedisFalso:
         await asyncio.sleep(0.01)
         return []
 
+    async def xrevrange(self, stream, count=None):
+        return [(b"0-0", {})]
+
 
 async def _correr(corrutina, segundos=0.2):
     parar = asyncio.Event()
@@ -583,14 +586,14 @@ async def test_la_telemetria_se_publica_y_queda_la_ultima():
 
 @pytest.mark.asyncio
 async def test_los_comandos_se_leen_solo_desde_el_arranque():
-    """Arranca en "$": un controlador reiniciado no ejecuta ordenes viejas."""
+    """Captura el cursor inicial una sola vez y luego usa IDs concretos."""
     r = RedisFalso()
     m, _ = _maquina()
     r.streams["__entrada__"] = [
         (b"1-0", {b"datos": json.dumps({"accion": p.ENCENDER_REFRIGERACION}).encode()})
     ]
     await _correr(lambda parar: main.escuchar_comandos(r, m, parar))
-    assert r.lecturas[0][p.STREAM_COMANDOS] == "$"
+    assert r.lecturas[0][p.STREAM_COMANDOS] == b"0-0"
     assert r.lecturas[1][p.STREAM_COMANDOS] == b"1-0"  # sigue desde el ultimo leido
     assert m.hal.refrigeracion is True
 

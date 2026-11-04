@@ -105,11 +105,14 @@ services:
       --access-logfile -
       --error-logfile -
     env_file: [.env]
+    environment:
+      HARDWARE_CONFIG_PATH: /app/hardware/hardware_config.json
     depends_on:
       mysql: { condition: service_healthy }
       redis: { condition: service_healthy }
     volumes:
       - static_files:/app/staticfiles
+      - hardware_config:/app/hardware
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:8000/api/healthz/"]
       interval: 15s
@@ -184,6 +187,11 @@ services:
       dockerfile: docker/controller/Dockerfile
     restart: unless-stopped
     env_file: [.env]
+    environment:
+      HARDWARE_CONFIG_PATH: /app/hardware/hardware_config.json
+      GPIO_CHIP: ${GPIO_CHIP:-0}
+    volumes:
+      - hardware_config:/app/hardware:ro
     depends_on:
       redis: { condition: service_healthy }
     healthcheck:
@@ -260,6 +268,7 @@ services:
 volumes:
   mysql_data:
   static_files:
+  hardware_config:
 
 networks:
   co2net:

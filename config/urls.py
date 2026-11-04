@@ -12,13 +12,19 @@ from rest_framework.routers import DefaultRouter
 from rest_framework_simplejwt.views import TokenRefreshView
 
 from config.health import healthz
+from operacion.hardware_views import (
+    HardwareAplicarView,
+    HardwareCatalogoView,
+    HardwareComandoView,
+    HardwareConfigView,
+    HardwareEstadoView,
+)
 from operacion.views import (
     AlertaViewSet,
     ControlComandoView,
     ControlEstadoView,
     ControlIniciarView,
     EventoEmergenciaViewSet,
-    HardwareConfigView,
     UmbralViewSet,
 )
 from procedimientos.views import ProcedimientoGuiadoViewSet
@@ -56,4 +62,8 @@ urlpatterns = [
     ),
     path("admin/", admin.site.urls),
     path("api/hardware/config/", HardwareConfigView.as_view(), name="hardware_config"),
+    path("api/hardware/catalogo/", HardwareCatalogoView.as_view(), name="hardware_catalogo"),
+    path("api/hardware/estado/", HardwareEstadoView.as_view(), name="hardware_estado"),
+    path("api/hardware/comandos/", HardwareComandoView.as_view(), name="hardware_comandos"),
+    path("api/hardware/aplicar/", HardwareAplicarView.as_view(), name="hardware_aplicar"),
 ]

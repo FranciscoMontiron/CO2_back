@@ -28,6 +28,9 @@ STREAM_EVENTOS = "co2:eventos"
 CANAL_TELEMETRIA = "co2:telemetria"
 CLAVE_TELEMETRIA = "co2:telemetria:ultima"
 CLAVE_CONFIGURACION = "co2:configuracion"
+CLAVE_HARDWARE = "co2:hardware:estado"
+COMPONENTE = "componente"
+APLICAR_HARDWARE = "aplicar_hardware"
 GRUPO_EVENTOS = "persistencia"
 
 # La ultima telemetria vive unos segundos: si el controlador muere, la clave
@@ -78,6 +81,7 @@ COMANDOS_SIMPLES = {
 
 # Los que energizan o desenergizan el sistema: se auditan como criticos (RN010).
 COMANDOS_CRITICOS = {
+    COMPONENTE,
     HABILITAR_AT,
     ENCENDER_LASER,
     INICIAR,
@@ -104,3 +108,4 @@ EV_ALERTA = "alerta"
 EV_EMERGENCIA = "emergencia"
 EV_FIN = "fin"
 EV_ABORTADO = "abortado"
+EV_HARDWARE = "hardware"

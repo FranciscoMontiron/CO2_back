@@ -2,8 +2,20 @@
   "componentes": {
     "shutter_principal": {
       "tipo": "SHUTTER_GPIO",
-      "pines": {},
+      "pines": {"pin_señal": 17},
       "estado": "Vigente"
+    },
+    "desplazador_x": {
+      "tipo": "STEPPER_DRV8825",
+      "pines": {"pin_step": 22, "pin_dir": 23, "pin_enable": 24},
+      "parametros": {"pasos_por_mm": 200, "carrera_max_mm": 300, "velocidad_mm_s": 1},
+      "estado": "Eliminado"
+    },
+    "Sensor de temperatura": {
+      "tipo": "LM35",
+      "pines": {},
+      "parametros": {"adc": "MCP3008", "canal": 0, "dispositivo_spi": 0, "vref": 3.3},
+      "estado": "Eliminado"
     }
   }
 }

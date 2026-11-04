@@ -362,7 +362,9 @@ class Maquina:
         texto = (
             "Falla simulada retirada." if falla == p.FALLA_NINGUNA else f"Falla simulada: {falla}."
         )
-        self._avisar(texto, "info" if falla == p.FALLA_NINGUNA else "warn")
+        # Informativo: inyectar una falla es una acción de prueba y no abre el aviso
+        # del sistema. Las alarmas que provoque la falla se informan por su cuenta.
+        self._avisar(texto)
 
     # ── Emergencia ──────────────────────────────────────────────────────────
 

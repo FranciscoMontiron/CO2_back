@@ -620,3 +620,26 @@ async def test_la_configuracion_publicada_reemplaza_los_umbrales_por_defecto():
     )
     await _correr(lambda parar: main.leer_configuracion(r, m, parar), segundos=0.1)
     assert [u["variable"] for u in m.umbrales] == ["TEMPERATURA_AGUA"]
+
+
+@pytest.mark.asyncio
+async def test_el_shutter_se_abre_y_cierra_a_mano_solo_si_esta_armado():
+    m, _ = _maquina()
+    await m.manejar({"accion": p.ABRIR_SHUTTER})
+    assert not m.hal.shutter_abierto  # desarmado: se rechaza
+    await _armar(m)
+    await m.manejar({"accion": p.ABRIR_SHUTTER})
+    m.tick(0.1)
+    assert m.hal.shutter_abierto
+    assert m.estado == LISTO and m.hal.laser  # abrirlo no baja el sistema
+    await m.manejar({"accion": p.CERRAR_SHUTTER})
+    assert not m.hal.shutter_abierto
+
+
+@pytest.mark.asyncio
+async def test_desarmar_el_shutter_lo_cierra():
+    m, _ = _maquina()
+    await _armar(m, con_laser=False)
+    await m.manejar({"accion": p.ABRIR_SHUTTER})
+    await m.manejar({"accion": p.DESARMAR_SHUTTER})
+    assert not m.hal.shutter_armado and not m.hal.shutter_abierto

@@ -154,7 +154,7 @@ class Maquina:
             ),
             "AT_ENCENDIDA": self.hal.alta_tension and self.hal.tension_kv >= 15.0,
             "FIBRA_ALINEADA": self.hal.fibra_alineada,
-            "SHUTTER_ARMADO": self.hal.shutter_armado and not self.hal.shutter_abierto,
+            "SHUTTER_ARMADO": self.hal.shutter_armado,
         }
 
     def _avisar(self, texto: str, nivel: str = "info") -> None:
@@ -268,6 +268,8 @@ class Maquina:
             p.ALINEAR_FIBRA: self._alinear_fibra,
             p.ARMAR_SHUTTER: self._armar_shutter,
             p.DESARMAR_SHUTTER: self._desarmar_shutter,
+            p.ABRIR_SHUTTER: self._abrir_shutter,
+            p.CERRAR_SHUTTER: self._cerrar_shutter,
             p.ENCENDER_LASER: self._encender_laser,
             p.APAGAR_LASER: self._apagar_laser,
             p.MOVER_MOTOR: self._mover_motor,
@@ -324,7 +326,20 @@ class Maquina:
         self._exigir_no(GRABANDO)
         if self.hal.laser:
             raise ComandoRechazadoError("apague el laser antes de desarmar el shutter.")
+        self.hal.shutter_abierto = False
         self.hal.desarmar_shutter()
+
+    def _abrir_shutter(self, _cmd: dict) -> None:
+        self._exigir_no(GRABANDO, EMERGENCIA)
+        if not self.hal.shutter_armado:
+            raise ComandoRechazadoError("arme el shutter antes de abrirlo.")
+        self.hal.shutter_abierto = True
+        self._avisar("Shutter abierto manualmente.")
+
+    def _cerrar_shutter(self, _cmd: dict) -> None:
+        self._exigir_no(GRABANDO)
+        self.hal.shutter_abierto = False
+        self._avisar("Shutter cerrado.")
 
     def _encender_laser(self, _cmd: dict) -> None:
         if self.estado != LISTO:

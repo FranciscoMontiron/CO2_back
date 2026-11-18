@@ -21,7 +21,6 @@ from django.utils import timezone
 
 from comun.enums import (
     AccionUmbral,
-    CriterioFin,
     EstadoEjecucion,
     EstadoRed,
     EstadoSistema,
@@ -70,13 +69,54 @@ USUARIOS_EJEMPLO = [
     ("operador", "L.", "Perez", TipoRol.OPERADOR),
 ]
 
-# Los tres programas del mockup del front, con su distancia y su desplazamiento.
-# Los pulsos se derivan del invariante longitud = marcas x periodo.
+# Los tres programas del mockup del front: (nombre, duracion del pulso [ms],
+# avance por pulso [um], pulsos). Se guardan como arbol de pasos contra el
+# inventario simulado: encender el laser, armar el shutter, referenciar el eje y
+# repetir pulso + avance. Los pulsos salen de longitud = marcas x periodo.
 PROGRAMAS_EJEMPLO = [
-    ("Programa A", 10.0, 400, 550.0, CriterioFin.LONGITUD, 10.0, None),
-    ("Programa B", 8.0, 350, 400.0, CriterioFin.LONGITUD, 8.0, None),
-    ("Programa C", 12.0, 500, 600.0, CriterioFin.CANT_MARCAS, None, 25),
+    ("Programa A", 400, 550.0, 18),
+    ("Programa B", 350, 400.0, 20),
+    ("Programa C", 500, 600.0, 25),
 ]
+
+VELOCIDAD_AVANCE_MM_S = 1.0
+
+
+def arbol_de_ejemplo(pulso_ms: int, avance_um: float, pulsos: int) -> list[dict]:
+    """Arma el arbol de pasos de un programa de ejemplo.
+
+    Args:
+        pulso_ms: Duracion de cada pulso.
+        avance_um: Avance del eje entre pulsos.
+        pulsos: Cantidad de marcas.
+
+    Returns:
+        El arbol, valido contra ``INVENTARIO_SIMULADO``.
+    """
+
+    def accion(componente, comando, **argumentos):
+        return {
+            "tipo": "ACCION",
+            "componente": componente,
+            "comando": comando,
+            "argumentos": argumentos,
+        }
+
+    return [
+        accion("laser", "encender"),
+        accion("shutter", "armar"),
+        accion("motor_x", "referenciar", posicion=0),
+        {
+            "tipo": "BUCLE",
+            "repeticiones": pulsos,
+            "pasos": [
+                accion("shutter", "pulso", duracion_ms=pulso_ms),
+                accion("motor_x", "mover", delta=avance_um / 1000, velocidad=VELOCIDAD_AVANCE_MM_S),
+            ],
+        },
+        accion("laser", "apagar"),
+    ]
+
 
 # Programas que usan el procedimiento guiado estandar.
 PROGRAMAS_CON_PROCEDIMIENTO_ESTANDAR = ["Programa A", "Programa B", "Programa C"]
@@ -284,21 +324,13 @@ class Command(BaseCommand):
         """
         contexto = {"request": SimpleNamespace(user=autor)}
         programas = {}
-        for nombre, mw, pulso, despl, criterio, distancia, pulsos in PROGRAMAS_EJEMPLO:
+        for nombre, pulso, despl, pulsos in PROGRAMAS_EJEMPLO:
             existente = Programa.objects.filter(nombre=nombre, activo=True).first()
             if existente:
                 programas[nombre] = existente
                 continue
             serializador = ProgramaSerializer(
-                data={
-                    "nombre": nombre,
-                    "potencia_objetivo_mw": mw,
-                    "duracion_pulso_ms": pulso,
-                    "desplazamiento_um": despl,
-                    "criterio_fin": criterio,
-                    "distancia_mm": distancia,
-                    "pulsos": pulsos,
-                },
+                data={"nombre": nombre, "pasos": arbol_de_ejemplo(pulso, despl, pulsos)},
                 context=contexto,
             )
             serializador.is_valid(raise_exception=True)
@@ -309,17 +341,17 @@ class Command(BaseCommand):
         """Graba las marcas que indica el programa, o la mitad si no termino."""
         if red.marcas.exists():
             return
-        datos = ProgramaSerializer(programa).data
-        total = datos["pulsos"] if completo else datos["pulsos"] // 2
+        _, pulso, despl, pulsos = next(e for e in PROGRAMAS_EJEMPLO if e[0] == programa.nombre)
+        total = pulsos if completo else pulsos // 2
         Marca.objects.bulk_create(
             [
                 Marca(
                     red=red,
                     numero=i,
-                    posicion=i * datos["desplazamiento_um"],
+                    posicion=i * despl,
                     cant_pulsos=1,
                     ciclo_trabajo=50.0,
-                    tiempo_de_pulso=datos["duracion_pulso_ms"],
+                    tiempo_de_pulso=float(pulso),
                 )
                 for i in range(1, total + 1)
             ]
@@ -336,7 +368,6 @@ class Command(BaseCommand):
                 valores={
                     Var.TEMPERATURA_AGUA: temperatura,
                     Var.CAUDAL_REFRIGERANTE: 4.2,
-                    Var.POTENCIA_LASER: programa.potencia_objetivo,
                 },
             )
 

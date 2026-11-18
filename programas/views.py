@@ -1,12 +1,14 @@
 """Vistas de programas de grabado."""
 
 from rest_framework import viewsets
+from rest_framework.decorators import action
+from rest_framework.response import Response
 
 from comun.enums import TipoRol
 from comun.permisos import escritura_solo_para
 
 from .models import Programa
-from .serializers import ProgramaSerializer
+from .serializers import ProgramaSerializer, inventario_api
 
 
 class ProgramaViewSet(viewsets.ModelViewSet):
@@ -28,6 +30,19 @@ class ProgramaViewSet(viewsets.ModelViewSet):
             .prefetch_related("pasos")
             .order_by("codigo")
         )
+
+    @action(detail=False, methods=["get"], url_path="inventario")
+    def inventario(self, request):
+        """Entrega el inventario contra el que se validan los programas, para el editor.
+
+        Returns:
+            El inventario vigente (``{"componentes": {...}}``), o 503 si el archivo de
+            hardware no es valido.
+        """
+        try:
+            return Response(inventario_api())
+        except ValueError as exc:
+            return Response({"detail": f"Hardware sin configuracion valida: {exc}"}, status=503)
 
     def perform_destroy(self, programa: Programa) -> None:
         """Borra el programa, o lo da de baja si ya se uso.

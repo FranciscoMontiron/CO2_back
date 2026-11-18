@@ -10,7 +10,7 @@ import datetime
 import pytest
 from rest_framework.test import APIClient
 
-from comun.enums import CriterioFin, EstadoEjecucion, TipoRol
+from comun.enums import EstadoEjecucion, TipoRol
 from operacion.models import Configuracion, Umbral
 from programas.models import Programa
 from trazabilidad.models import RegistroDeFabricacion
@@ -56,14 +56,18 @@ def administrador(db):
 
 
 def _datos_programa(**cambios):
-    """Datos validos de un programa en representacion de laboratorio."""
+    """Datos validos de un programa: arma el shutter y da un pulso."""
     datos = {
         "nombre": "Programa de prueba",
-        "potencia_objetivo_mw": 10.0,
-        "duracion_pulso_ms": 400,
-        "desplazamiento_um": 550.0,
-        "criterio_fin": CriterioFin.LONGITUD,
-        "distancia_mm": 10.0,
+        "pasos": [
+            {"tipo": "ACCION", "componente": "shutter", "comando": "armar", "argumentos": {}},
+            {
+                "tipo": "ACCION",
+                "componente": "shutter",
+                "comando": "pulso",
+                "argumentos": {"duracion_ms": 400},
+            },
+        ],
     }
     datos.update(cambios)
     return datos
@@ -236,71 +240,6 @@ def test_los_ensayos_no_se_crean_por_la_api(como, administrador, programa):
 
 
 @pytest.mark.django_db
-def test_crear_por_distancia_deriva_los_pulsos(como, investigador):
-    """10 mm a 550 um son 18 pulsos: longitud = marcas x periodo."""
-    r = como(investigador).post("/api/programas/", _datos_programa(), format="json")
-
-    assert r.status_code == 201, r.data
-    assert r.data["pulsos"] == 18
-    assert r.data["distancia_mm"] == 10.0
-    assert r.data["codigo"] == "PRG-001"
-    assert r.data["creado_por"] == "investigador"
-
-
-@pytest.mark.django_db
-def test_crear_por_pulsos_deriva_la_distancia(como, investigador):
-    """25 pulsos a 600 um son 15 mm."""
-    datos = _datos_programa(
-        desplazamiento_um=600.0, criterio_fin=CriterioFin.CANT_MARCAS, distancia_mm=None, pulsos=25
-    )
-    r = como(investigador).post("/api/programas/", datos, format="json")
-
-    assert r.status_code == 201, r.data
-    assert r.data["distancia_mm"] == pytest.approx(15.0)
-
-
-@pytest.mark.django_db
-def test_el_programa_queda_modelado_por_dentro(como, investigador):
-    """La representacion de laboratorio se reparte en Programa, Periodo y Paso."""
-    r = como(investigador).post("/api/programas/", _datos_programa(), format="json")
-    programa = Programa.objects.get(codigo=r.data["codigo"])
-    paso = programa.pasos.get()
-
-    assert programa.validado is True
-    assert programa.periodo.periodo_base == 550.0
-    assert programa.potencia_objetivo == pytest.approx(0.010)  # se guarda en W
-    assert (paso.tiempo_de_pulso, paso.repeticiones) == (400, 18)
-
-
-@pytest.mark.django_db
-def test_la_potencia_va_y_vuelve_en_mw(como, investigador):
-    """Se guarda en W pero la API habla en mW, como el formulario del front."""
-    r = como(investigador).post(
-        "/api/programas/", _datos_programa(potencia_objetivo_mw=250.0), format="json"
-    )
-    assert r.data["potencia_objetivo_mw"] == 250.0
-
-
-@pytest.mark.django_db
-def test_el_criterio_por_distancia_exige_la_distancia(como, investigador):
-    """Sin el valor que el criterio necesita, el programa no es ejecutable."""
-    r = como(investigador).post(
-        "/api/programas/", _datos_programa(distancia_mm=None), format="json"
-    )
-    assert r.status_code == 400
-    assert "distancia_mm" in r.data
-
-
-@pytest.mark.django_db
-def test_los_criterios_que_necesitan_el_lazo_no_se_aceptan(como, investigador):
-    """TIEMPO y ATENUACION_OBJETIVO llegan con el lazo de control (M3)."""
-    r = como(investigador).post(
-        "/api/programas/", _datos_programa(criterio_fin=CriterioFin.TIEMPO), format="json"
-    )
-    assert r.status_code == 400
-
-
-@pytest.mark.django_db
 def test_los_codigos_son_correlativos(como, investigador):
     """PRG-001, PRG-002... sin pisarse."""
     c = como(investigador)
@@ -317,13 +256,13 @@ def test_editar_un_programa(como, investigador):
 
     r = c.put(
         f"/api/programas/{codigo}/",
-        _datos_programa(nombre="Editado", desplazamiento_um=500.0),
+        _datos_programa(nombre="Editado"),
         format="json",
     )
 
     assert r.status_code == 200, r.data
     assert r.data["nombre"] == "Editado"
-    assert r.data["pulsos"] == 20  # 10 mm / 500 um
+    assert r.data["resumen"]["pulsos"] == 1
 
 
 @pytest.mark.django_db
@@ -718,73 +657,6 @@ def test_no_se_editan_umbrales_durante_un_grabado(como, administrador, configura
 
 
 # ── Programas: perfiles de periodo y versiones ───────────────────────────────
-
-
-@pytest.mark.django_db
-def test_crear_un_perfil_lineal_deriva_los_pulsos_acumulando(como, investigador):
-    """Con periodo 500 + 100 n, en 2 mm entran 3 marcas (500 + 600 + 700 = 1800 um)."""
-    datos = _datos_programa(
-        perfil_periodo="LINEAL", desplazamiento_um=500.0, incremento_um=100.0, distancia_mm=2.0
-    )
-    r = como(investigador).post("/api/programas/", datos, format="json")
-
-    assert r.status_code == 201, r.data
-    assert r.data["pulsos"] == 3
-    assert r.data["perfil_periodo"] == "LINEAL"
-    assert r.data["incremento_um"] == 100.0
-    assert Programa.objects.get(codigo=r.data["codigo"]).periodo.tipo == "LINEAL"
-
-
-@pytest.mark.django_db
-def test_un_perfil_exponencial_por_pulsos_deriva_la_distancia(como, investigador):
-    """3 marcas a 500 um con factor 2 son 500 + 1000 + 2000 = 3,5 mm."""
-    datos = _datos_programa(
-        perfil_periodo="EXPONENCIAL",
-        desplazamiento_um=500.0,
-        factor=2.0,
-        criterio_fin=CriterioFin.CANT_MARCAS,
-        distancia_mm=None,
-        pulsos=3,
-    )
-    r = como(investigador).post("/api/programas/", datos, format="json")
-
-    assert r.status_code == 201, r.data
-    assert r.data["distancia_mm"] == pytest.approx(3.5)
-
-
-@pytest.mark.django_db
-def test_el_perfil_lineal_exige_incremento_en_la_api(como, investigador):
-    """Sin incremento seria una red uniforme creyendo que es chirpeada."""
-    r = como(investigador).post(
-        "/api/programas/", _datos_programa(perfil_periodo="LINEAL"), format="json"
-    )
-    assert r.status_code == 400
-    assert "perfil_periodo" in r.data
-
-
-@pytest.mark.django_db
-def test_un_perfil_lineal_que_se_hace_negativo_se_rechaza(como, investigador):
-    """Un periodo <= 0 no se puede grabar: el motor no avanza hacia atras."""
-    datos = _datos_programa(
-        perfil_periodo="LINEAL", desplazamiento_um=500.0, incremento_um=-200.0, distancia_mm=10.0
-    )
-    r = como(investigador).post("/api/programas/", datos, format="json")
-    assert r.status_code == 400
-    assert "perfil_periodo" in r.data
-
-
-@pytest.mark.django_db
-def test_cambiar_a_constante_limpia_los_parametros_del_perfil(como, investigador):
-    """Volver a CONSTANTE no deja el incremento de la version anterior."""
-    c = como(investigador)
-    lineal = _datos_programa(perfil_periodo="LINEAL", incremento_um=10.0)
-    codigo = c.post("/api/programas/", lineal, format="json").data["codigo"]
-
-    r = c.put(f"/api/programas/{codigo}/", _datos_programa(), format="json")
-
-    assert r.status_code == 200, r.data
-    assert r.data["perfil_periodo"] == "CONSTANTE"
-    assert r.data["incremento_um"] is None
 
 
 @pytest.mark.django_db

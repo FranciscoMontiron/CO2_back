@@ -1,7 +1,10 @@
 """HAL GPIO: inventario físico y operación manual por instancia."""
 
+import time
+
 from controller.hal_base import HalBase
 from controller.hardware import GestorHardware
+from controller.roles import resolver
 
 
 class HalGpio(HalBase):
@@ -26,24 +29,32 @@ class HalGpio(HalBase):
         """Exige seleccionar explícitamente el desplazador de destino."""
         raise ValueError("Seleccione el desplazador por su nombre en control de componentes.")
 
+    async def operar(self, componente, comando, argumentos):
+        """Encola la orden en el gestor y espera su resultado."""
+        return await self.hardware.ejecutar_y_esperar(componente, comando, argumentos)
+
+    def inventario(self):
+        """Configuración vigente del gestor."""
+        return self.hardware.config
+
+    def posicion_de(self, componente):
+        """Posición de la última muestra válida del motor; None si no hay una."""
+        muestra = self.hardware.muestras.get(componente) or {}
+        if muestra.get("calidad") != "OK":
+            return None
+        return (muestra.get("valores") or {}).get("posicion")
+
+    def roles(self):
+        """Magnitudes del dashboard según los roles asignados; lo ausente es None."""
+        return resolver(self.hardware.config, self.hardware.muestras, time.monotonic())
+
     def lecturas(self):
-        """Declara ausentes las magnitudes del arreglo todavía no enlazadas."""
-        return {
-            k: None
-            for k in (
-                "TEMPERATURA_AGUA",
-                "CAUDAL_REFRIGERANTE",
-                "POTENCIA_LASER",
-                "TENSION_AT",
-                "CORRIENTE_AT",
-                "POSICION_MOTOR",
-                "TEMPERATURA_AMBIENTE",
-            )
-        }
+        """Variables del dashboard alimentadas por componentes con rol."""
+        return self.roles()["variables"]
 
     def senales(self):
-        """Declara ausentes las señales del arreglo todavía no enlazadas."""
-        return {"FIBRA_ALINEADA": None, "SHUTTER_ABIERTO": None, "SHUTTER_CERRADO": None}
+        """Señales del dashboard alimentadas por componentes con rol."""
+        return self.roles()["senales"]
 
     def avanzar(self, dt):
         """El muestreo físico lo realiza el gestor, sin simular dinámica."""

@@ -133,14 +133,6 @@ def test_orden_obsoleta_y_entrada_incorrecta_no_se_encolan(cliente_hardware):
 
 
 @pytest.mark.django_db
-def test_gpio_no_crea_ensayo_automatico_sin_capacidades(cliente_hardware, settings):
-    cliente, _ = cliente_hardware
-    settings.CONTROLLER_HAL = "gpio"
-    respuesta = cliente.post("/api/control/iniciar/", {"programa": "PRG-001"}, format="json")
-    assert respuesta.status_code == 409
-
-
-@pytest.mark.django_db
 def test_resultado_hardware_se_persiste_una_sola_vez(usuario):
     from operacion.management.commands.escuchar_controlador import al_hardware
 

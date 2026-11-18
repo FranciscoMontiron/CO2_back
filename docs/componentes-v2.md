@@ -74,11 +74,17 @@ Otros ADC necesitan un driver adicional; no se asumen equivalentes al MCP3008.
 
 ### Motor DRV8825
 
-Declarar `pin_step`, `pin_dir` y `pin_enable`, además de `pasos_por_mm`,
-`carrera_max_mm` y opcionalmente `velocidad_mm_s` (por defecto 1).
-`pin_enable` es activo en bajo. Los pasos por mm deben incluir el microstepping
-configurado físicamente. El driver limita la frecuencia a 2000 pasos/s y cada
-orden de movimiento a un máximo de diez minutos.
+Declarar `pin_step`, `pin_dir` y `pin_enable`, además de `unidad` (`mm` o `°`),
+`pasos_por_unidad`, `minimo`, `maximo` y `velocidad_maxima` (por defecto 1 unidad/s).
+`pin_enable` es activo en bajo. Los pasos por unidad deben incluir el microstepping
+configurado físicamente. El driver limita la frecuencia a 2000 pasos/s
+(`pasos_por_unidad × velocidad_maxima ≤ 2000`).
+
+Cumple el contrato genérico de motor: `referenciar(posicion)`, `mover_a(posicion, velocidad)`,
+`mover(delta, velocidad)` y `detener()`; campos `posicion`, `en_movimiento`, `referenciado`
+y `habilitado`. No mueve sin referenciar, rechaza destinos fuera de `[minimo, maximo]` y
+velocidades fuera de `(0, velocidad_maxima]`. El plazo de cada movimiento es
+`|distancia| / velocidad + 5` segundos.
 
 Al arrancar, deshabilitar o interrumpir un movimiento se pierde la referencia.
 Para mover, el operador debe situar físicamente el eje y declarar su posición

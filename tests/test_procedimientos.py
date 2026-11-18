@@ -159,6 +159,20 @@ def test_procedimiento_estandar_cumple_el_catalogo():
     assert validar_procedimiento(PASOS_ESTANDAR) == []
 
 
+def test_paso_fuente_no_ofrece_habilitar_at():
+    """La alta tensión se habilita solo con el botón físico del laboratorio."""
+    paso = next(p for p in PASOS_ESTANDAR if p["titulo"] == "Fuente de alta tensión")
+    assert all(a.get("accion") != "habilitar_at" for a in paso.get("acciones", []))
+    validaciones = {v["texto"]: v for v in paso["validaciones"]}
+    assert validaciones["Interlock físico cerrado"]["tipo"] == TipoValidacion.MANUAL
+    hv = validaciones["Fuente HV habilitada"]
+    assert hv["tipo"] == TipoValidacion.SENSOR
+    assert hv["condicion"] == {"fuente": "variables.TENSION_AT", "op": ">=", "valor": 15}
+    assert paso["condicion_avance"] == hv["condicion"]
+    habilitada = next(i for i in paso["indicadores"] if i["nombre"] == "Fuente HV")["estados"][0]
+    assert habilitada["cuando"] == hv["condicion"]
+
+
 # ── API ─────────────────────────────────────────────────────────────────────
 
 
@@ -260,8 +274,9 @@ def test_catalogo(cliente, operador):
 # ── Asignacion a programas ──────────────────────────────────────────────────
 
 
-def test_asignar_procedimiento_a_un_programa(cliente, investigador, programa):
+def test_asignar_procedimiento_a_un_programa(cliente, investigador, programa_arbol):
     """El programa expone y acepta el codigo de su procedimiento."""
+    programa = programa_arbol
     cliente.force_authenticate(investigador)
     proc = cliente.post(URL, _hlpg(), format="json").data["codigo"]
     datos = cliente.get(f"/api/programas/{programa.codigo}/").data
@@ -275,8 +290,9 @@ def test_asignar_procedimiento_a_un_programa(cliente, investigador, programa):
     assert usados == [{"codigo": programa.codigo, "nombre": programa.nombre}]
 
 
-def test_no_se_borra_un_procedimiento_en_uso(cliente, investigador, programa):
+def test_no_se_borra_un_procedimiento_en_uso(cliente, investigador, programa_arbol):
     """Borrar un procedimiento que usa un programa dejaria al operador sin guia."""
+    programa = programa_arbol
     cliente.force_authenticate(investigador)
     proc = cliente.post(URL, _hlpg(), format="json").data["codigo"]
     Programa.objects.filter(pk=programa.pk).update(
@@ -301,7 +317,7 @@ def test_semilla_es_idempotente(db):
     assert primero.codigo == CODIGO_ESTANDAR
     assert primero.pasos.count() == 9
     assert (
-        ValidacionPaso.objects.filter(paso__procedimiento=primero).exclude(detalle="").count() == 27
+        ValidacionPaso.objects.filter(paso__procedimiento=primero).exclude(detalle="").count() == 26
     )
 
 
@@ -373,3 +389,219 @@ def test_paso_2_estandar_usa_interruptor(db):
     (accion,) = proc.pasos.get(orden=2).acciones
     assert accion["tipo"] == "interruptor"
     assert accion["apagar"]["accion"] == "apagar_refrigeracion"
+
+
+MIGRACION_0005 = "procedimientos.migrations.0005_fuente_at_sin_boton_software"
+
+
+def test_migracion_0005_corrige_una_base_con_el_paso_viejo(db):
+    """Una base que ya tenia PROC-001 con el boton de software queda como la semilla nueva."""
+    import importlib
+
+    from django.apps import apps
+
+    migracion = importlib.import_module(MIGRACION_0005)
+    proc, _ = cargar_procedimiento_estandar()
+    paso = proc.pasos.get(titulo="Fuente de alta tensión")
+    # Deja el paso como lo dejaba la semilla anterior.
+    paso.acciones = [migracion.BOTON]
+    paso.condicion_avance = migracion.ENCENDIDA_SW
+    paso.indicadores[1]["nombre"] = "Fuente HV (SW)"
+    paso.indicadores[1]["estados"][0]["cuando"] = migracion.ENCENDIDA_SW
+    paso.save()
+    paso.validaciones.filter(texto=migracion.TEXTO_NUEVO).update(
+        texto=migracion.TEXTO_VIEJO,
+        detalle=migracion.DETALLE_VIEJO,
+        condicion=migracion.ENCENDIDA_SW,
+    )
+    version = proc.version
+
+    migracion.sin_boton(apps, None)
+
+    proc.refresh_from_db()
+    paso.refresh_from_db()
+    assert proc.version == version + 1
+    assert paso.acciones == []
+    assert paso.condicion_avance == migracion.TENSION
+    assert paso.indicadores[1]["nombre"] == "Fuente HV"
+    assert paso.indicadores[1]["estados"][0]["cuando"] == migracion.TENSION
+    hv = paso.validaciones.get(texto=migracion.TEXTO_NUEVO)
+    assert hv.condicion == migracion.TENSION
+    # Una segunda pasada no vuelve a tocar nada.
+    migracion.sin_boton(apps, None)
+    proc.refresh_from_db()
+    assert proc.version == version + 1
+
+
+def test_migracion_0005_sin_procedimiento_no_hace_nada(db):
+    """Sin PROC-001 la migracion no falla."""
+    import importlib
+
+    from django.apps import apps
+
+    migracion = importlib.import_module(MIGRACION_0005)
+    migracion.sin_boton(apps, None)
+
+
+MIGRACION_0006 = "procedimientos.migrations.0006_sin_criterio_de_fin"
+
+
+def test_semilla_sin_criterio_de_fin(db):
+    """La semilla nueva no exige un criterio de fin que el programa ya no tiene."""
+    proc, _ = cargar_procedimiento_estandar()
+    paso = proc.pasos.get(titulo="Parámetros base")
+    assert not paso.validaciones.filter(texto="Criterio de finalización definido").exists()
+    assert [v.orden for v in paso.validaciones.order_by("orden")] == [1, 2]
+    assert paso.indicadores[1]["nombre"] == "Resumen del programa"
+
+
+def test_migracion_0006_corrige_una_base_con_el_criterio_de_fin(db):
+    """Una base con PROC-001 viejo queda igual que la semilla nueva, una sola vez."""
+    import importlib
+
+    from django.apps import apps
+
+    migracion = importlib.import_module(MIGRACION_0006)
+    proc, _ = cargar_procedimiento_estandar()
+    paso = proc.pasos.get(titulo="Parámetros base")
+    paso.indicadores[1]["nombre"] = migracion.INDICADOR_VIEJO
+    paso.indicadores[1]["estados"][0]["texto"] = migracion.TEXTO_VIEJO
+    paso.save()
+    paso.validaciones.filter(texto__startswith="Parámetros dentro").update(
+        detalle=migracion.DETALLE_VIEJO
+    )
+    paso.validaciones.create(
+        orden=3,
+        texto=migracion.VALIDACION_VIEJA,
+        detalle="x",
+        tipo="SENSOR",
+        condicion={"fuente": "programa.tiene_criterio_fin", "op": "es_verdadero"},
+    )
+    version = proc.version
+
+    migracion.sin_criterio(apps, None)
+
+    proc.refresh_from_db()
+    paso.refresh_from_db()
+    assert proc.version == version + 1
+    assert not paso.validaciones.filter(texto=migracion.VALIDACION_VIEJA).exists()
+    assert paso.indicadores[1]["nombre"] == migracion.INDICADOR_NUEVO
+    assert paso.indicadores[1]["estados"][0]["texto"] == migracion.TEXTO_NUEVO
+    assert paso.validaciones.filter(detalle=migracion.DETALLE_NUEVO).exists()
+    migracion.sin_criterio(apps, None)
+    proc.refresh_from_db()
+    assert proc.version == version + 1
+
+
+def test_migracion_0006_sin_procedimiento_no_hace_nada(db):
+    """Sin PROC-001 la migracion no falla."""
+    import importlib
+
+    from django.apps import apps
+
+    importlib.import_module(MIGRACION_0006).sin_criterio(apps, None)
+
+
+MIGRACION_0007 = "procedimientos.migrations.0007_progreso_por_acciones"
+
+
+def _paso_grabado(proc):
+    return proc.pasos.get(titulo="Loop de grabado")
+
+
+def test_semilla_lee_el_progreso_que_publica_el_controlador(db):
+    """El controlador publica ``pulsos`` hechos; ``pulso`` y ``distancia_mm`` ya no existen."""
+    from procedimientos.catalogo import FUENTES
+
+    proc, _ = cargar_procedimiento_estandar()
+    paso = _paso_grabado(proc)
+    (progreso,) = [i for i in paso.indicadores if i["nombre"] == "Progreso"]
+    assert progreso["estados"][0]["texto"] == "{ejecucion.pulsos} / {programa.pulsos} pulsos"
+    primer = paso.validaciones.get(texto="Primer pulso ejecutado correctamente")
+    assert primer.condicion["alguna"][0] == {
+        "fuente": "ejecucion.pulsos",
+        "op": ">=",
+        "valor": 1,
+    }
+    assert paso.validaciones.filter(texto="Programa completado").exists()
+    for fuente in ("ejecucion.acciones", "ejecucion.total", "ejecucion.pulsos"):
+        assert fuente in FUENTES
+    assert "ejecucion.ubicacion" in FUENTES
+    assert "ejecucion.ultimo_pulso_ms" in FUENTES
+    assert "ejecucion.pulso" not in FUENTES
+    assert "ejecucion.distancia_mm" not in FUENTES
+
+
+def test_migracion_0007_corrige_una_base_con_el_progreso_viejo(db):
+    """Una base con PROC-001 viejo pasa a leer ``ejecucion.pulsos``, una sola vez."""
+    import importlib
+
+    from django.apps import apps
+
+    migracion = importlib.import_module(MIGRACION_0007)
+    proc, _ = cargar_procedimiento_estandar()
+    paso = _paso_grabado(proc)
+    (progreso,) = [i for i in paso.indicadores if i["nombre"] == "Progreso"]
+    progreso["estados"][0]["texto"] = migracion.INDICADOR_VIEJO
+    paso.save()
+    paso.validaciones.filter(texto=migracion.PRIMER_PULSO).update(
+        detalle=migracion.DETALLE_PULSO_VIEJO, condicion=migracion.CONDICION_VIEJA
+    )
+    paso.validaciones.filter(texto=migracion.FIN_NUEVO).update(
+        texto=migracion.FIN_VIEJO, detalle=migracion.DETALLE_FIN_VIEJO
+    )
+    version = proc.version
+
+    migracion.progreso_por_acciones(apps, None)
+
+    proc.refresh_from_db()
+    paso.refresh_from_db()
+    assert proc.version == version + 1
+    (progreso,) = [i for i in paso.indicadores if i["nombre"] == "Progreso"]
+    assert progreso["estados"][0]["texto"] == migracion.INDICADOR_NUEVO
+    primer = paso.validaciones.get(texto=migracion.PRIMER_PULSO)
+    assert primer.condicion == migracion.CONDICION_NUEVA
+    assert primer.detalle == migracion.DETALLE_PULSO_NUEVO
+    fin = paso.validaciones.get(texto=migracion.FIN_NUEVO)
+    assert fin.detalle == migracion.DETALLE_FIN_NUEVO
+    # Una segunda pasada no vuelve a tocar nada.
+    migracion.progreso_por_acciones(apps, None)
+    proc.refresh_from_db()
+    assert proc.version == version + 1
+
+
+def test_migracion_0007_no_pisa_un_texto_editado(db):
+    """Si el laboratorio editó el detalle, la migración no lo pisa."""
+    import importlib
+
+    from django.apps import apps
+
+    migracion = importlib.import_module(MIGRACION_0007)
+    proc, _ = cargar_procedimiento_estandar()
+    paso = _paso_grabado(proc)
+    paso.validaciones.filter(texto=migracion.PRIMER_PULSO).update(
+        detalle="Texto propio del laboratorio", condicion=migracion.CONDICION_VIEJA
+    )
+    migracion.progreso_por_acciones(apps, None)
+    primer = paso.validaciones.get(texto=migracion.PRIMER_PULSO)
+    assert primer.detalle == "Texto propio del laboratorio"
+    assert primer.condicion == migracion.CONDICION_NUEVA
+
+
+def test_migracion_0007_sin_procedimiento_no_hace_nada(db):
+    """Sin PROC-001 la migracion no falla."""
+    import importlib
+
+    from django.apps import apps
+
+    importlib.import_module(MIGRACION_0007).progreso_por_acciones(apps, None)
+
+
+def test_el_catalogo_no_ofrece_habilitar_at():
+    """Spec 5.8: un procedimiento editado no puede volver a poner el botón de software (m-3)."""
+    from controller import protocolo as p
+    from procedimientos.catalogo import ACCIONES, validar_accion
+
+    assert p.HABILITAR_AT not in ACCIONES
+    errores, _ = validar_accion({"etiqueta": "HV", "accion": p.HABILITAR_AT}, "a")
+    assert errores

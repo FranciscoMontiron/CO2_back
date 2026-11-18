@@ -164,10 +164,9 @@ def test_el_estado_devuelve_la_ultima_telemetria(operador, bus):
 
 @pytest.mark.django_db
 def test_iniciar_crea_el_ensayo_y_la_red_y_manda_el_programa(
-    operador, bus, programa, lote, configuracion
+    operador, bus, programa_arbol, lote, configuracion
 ):
     """El registro existe antes de que el controlador empiece a emitir marcas."""
-    programa.validar()
     configuracion.activar()
 
     r = operador.post("/api/control/iniciar/", {"programa": "PRG-001"}, format="json")
@@ -180,19 +179,91 @@ def test_iniciar_crea_el_ensayo_y_la_red_y_manda_el_programa(
     (cmd,) = bus.comandos
     assert cmd["accion"] == p.INICIAR
     assert cmd["registro"] == registro.codigo
-    assert cmd["programa"]["periodo"] == {
-        "tipo": "CONSTANTE",
-        "base_um": 500.0,
-        "incremento_um": None,
-        "factor": None,
-    }
-    assert cmd["programa"]["pulsos"] == 40
 
 
 @pytest.mark.django_db
-def test_en_modo_prueba_no_se_crea_red(operador, bus, programa):
+def test_iniciar_envia_el_arbol_al_controlador(operador, bus, programa_arbol):
+    from programas.serializers import arbol_de_pasos
+
+    operador.post("/api/control/iniciar/", {"programa": "PRG-001"}, format="json")
+    (cmd,) = bus.comandos
+    assert cmd["programa"] == {
+        "codigo": "PRG-001",
+        "nombre": "Helicoidal de prueba",
+        "pasos": arbol_de_pasos(programa_arbol),
+    }
+    assert cmd["programa"]["pasos"][1]["tipo"] == "BUCLE"
+
+
+@pytest.mark.django_db
+def test_iniciar_en_gpio_ya_no_devuelve_409(operador, bus, programa_arbol, settings):
+    settings.CONTROLLER_HAL = "gpio"
+    bus.claves[p.CLAVE_TELEMETRIA] = _telemetria(laser=False)  # el laser ya no se exige
+    r = operador.post("/api/control/iniciar/", {"programa": "PRG-001"}, format="json")
+    assert r.status_code == 201, r.data
+
+
+@pytest.mark.django_db
+def test_programa_de_simulado_en_gpio_se_rechaza_al_iniciar(
+    operador, bus, programa_arbol, settings, tmp_path
+):
+    """Se guardo contra el simulado; en GPIO el controlador lo rechaza y el registro se aborta."""
+    import asyncio
+
+    from controller.maquina import Maquina
+    from controller.programa import INVENTARIO_SIMULADO
+    from controller.rpi import HalGpio
+    from tests.test_hardware import sistema
+
+    settings.CONTROLLER_HAL = "gpio"
+    r = operador.post("/api/control/iniciar/", {"programa": "PRG-001"}, format="json")
+    assert r.status_code == 201, r.data
+    (cmd,) = bus.comandos
+
+    componentes = {k: v for k, v in INVENTARIO_SIMULADO["componentes"].items() if k != "motor_x"}
+    eventos = []
+
+    async def correr():
+        async with sistema(tmp_path, componentes) as (gestor, _, _):
+            maquina = Maquina(HalGpio(gestor), emitir=lambda t, d: eventos.append((t, d)))
+            await maquina.manejar(cmd)
+            assert maquina.ejecucion is None
+
+    asyncio.run(correr())
+    (abortado,) = [d for t, d in eventos if t == p.EV_ABORTADO]
+    assert "motor_x" in abortado["motivo"]
+    procesar(p.EV_ABORTADO, abortado)
+    registro = RegistroDeFabricacion.objects.get(codigo=r.data["registro"])
+    assert registro.estado == EstadoEjecucion.ABORTADO
+    # Un arranque rechazado no deja una red VIABLE fantasma en el lote.
+    assert registro.red.estado == EstadoRed.INVIABLE
+    assert not registro.red.marcas.exists()
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("estado", ["REPOSO", "PREPARANDO"])
+def test_en_simulado_no_se_inicia_sin_el_sistema_listo(operador, bus, programa_arbol, estado):
+    """En simulado el controlador rechazaría: no se crea el registro en vano."""
+    bus.claves[p.CLAVE_TELEMETRIA] = _telemetria(estado=estado)
+    r = operador.post("/api/control/iniciar/", {"programa": "PRG-001"}, format="json")
+    assert r.status_code == 409
+    assert "LISTO" in r.data["detail"]
+    assert not RegistroDeFabricacion.objects.exists()
+    assert not bus.comandos
+
+
+@pytest.mark.django_db
+def test_en_gpio_se_inicia_sin_estado_listo(operador, bus, programa_arbol, settings):
+    """En GPIO no hay LISTO: las condiciones las decide el controlador."""
+    settings.CONTROLLER_HAL = "gpio"
+    bus.claves[p.CLAVE_TELEMETRIA] = _telemetria(estado="REPOSO", laser=False)
+    r = operador.post("/api/control/iniciar/", {"programa": "PRG-001"}, format="json")
+    assert r.status_code == 201, r.data
+
+
+@pytest.mark.django_db
+def test_en_modo_prueba_no_se_crea_red(operador, bus, programa_arbol):
     """Restriccion del diagrama: {modo = REAL => 1 Red}."""
-    programa.validar()
     r = operador.post(
         "/api/control/iniciar/", {"programa": "PRG-001", "modo": "PRUEBA"}, format="json"
     )
@@ -201,9 +272,8 @@ def test_en_modo_prueba_no_se_crea_red(operador, bus, programa):
 
 
 @pytest.mark.django_db
-def test_los_codigos_de_ensayo_son_correlativos(operador, bus, programa):
+def test_los_codigos_de_ensayo_son_correlativos(operador, bus, programa_arbol):
     """ENS-AAAA-00001, ENS-AAAA-00002..."""
-    programa.validar()
     a = operador.post("/api/control/iniciar/", {"programa": "PRG-001"}, format="json").data[
         "registro"
     ]
@@ -216,11 +286,10 @@ def test_los_codigos_de_ensayo_son_correlativos(operador, bus, programa):
 @pytest.mark.django_db
 @pytest.mark.parametrize(
     "telemetria",
-    [_telemetria(estado="PREPARANDO"), _telemetria(laser=False), _telemetria(bloqueado=True)],
+    [_telemetria(estado="EMERGENCIA"), _telemetria(estado="GRABANDO"), _telemetria(bloqueado=True)],
 )
-def test_no_se_inicia_si_el_sistema_no_esta_listo(operador, bus, programa, telemetria):
-    """Si arrancara, el controlador lo rechazaria y quedaria un registro huerfano."""
-    programa.validar()
+def test_no_se_inicia_en_emergencia_grabando_o_bloqueado(operador, bus, programa_arbol, telemetria):
+    """El resto de las condiciones las decide el controlador."""
     bus.claves[p.CLAVE_TELEMETRIA] = telemetria
     r = operador.post("/api/control/iniciar/", {"programa": "PRG-001"}, format="json")
     assert r.status_code == 409
@@ -229,7 +298,7 @@ def test_no_se_inicia_si_el_sistema_no_esta_listo(operador, bus, programa, telem
 
 @pytest.mark.django_db
 def test_no_se_inicia_un_programa_sin_validar(operador, bus, programa):
-    """Un programa sin validar puede tener huecos que paren la maquina a la mitad."""
+    """Un programa viejo (sin arbol) queda sin validar y no se puede iniciar."""
     r = operador.post("/api/control/iniciar/", {"programa": "PRG-001"}, format="json")
     assert r.status_code == 400
 
@@ -251,6 +320,24 @@ def test_las_marcas_se_guardan_y_una_entrega_repetida_no_duplica(registro):
     procesar(p.EV_MARCA, datos)
     procesar(p.EV_MARCA, datos)
     assert Marca.objects.filter(red=registro.red).count() == 1
+
+
+@pytest.mark.django_db
+def test_marca_real_sin_ciclo_de_trabajo_ni_posicion(registro):
+    """Payload del controlador por pulso: duracion real, sin ciclo de trabajo."""
+    procesar(
+        p.EV_MARCA,
+        {
+            "registro": registro.codigo,
+            "numero": 1,
+            "tiempo_de_pulso": 401.3,
+            "cant_pulsos": 1,
+            "posicion_um": None,
+        },
+    )
+    marca = Marca.objects.get(red=registro.red)
+    assert marca.ciclo_trabajo is None and marca.posicion is None
+    assert marca.tiempo_de_pulso == pytest.approx(401.3)
 
 
 @pytest.mark.django_db
@@ -355,6 +442,8 @@ def test_abortar_deja_el_motivo(registro):
     registro.refresh_from_db()
     assert registro.estado == EstadoEjecucion.ABORTADO
     assert "Rechazado" in registro.observaciones
+    # Sin marcas no queda como VIABLE: nunca se grabó nada.
+    assert registro.red.estado == EstadoRed.INVIABLE
 
 
 @pytest.mark.django_db
@@ -398,3 +487,38 @@ def test_el_websocket_rechaza_a_un_usuario_dado_de_baja(usuario):
     token = str(AccessToken.for_user(usuario))
     usuario.dar_de_baja()
     assert async_to_sync(autenticar)(f"token={token}".encode()) is None
+
+
+def _marcar(registro, posiciones):
+    for n, pos in enumerate(posiciones, 1):
+        procesar(
+            p.EV_MARCA,
+            {
+                "registro": registro.codigo,
+                "numero": n,
+                "tiempo_de_pulso": 400.0,
+                "cant_pulsos": 1,
+                "posicion_um": pos,
+            },
+        )
+
+
+@pytest.mark.django_db
+def test_longitud_y_periodo_salen_de_las_marcas_registradas(registro):
+    """Marcas a 100/200/300 um: la red mide 0,2 mm con un periodo de 100 um."""
+    registro.programa.periodo = None
+    registro.programa.save()
+    _marcar(registro, [100.0, 200.0, 300.0])
+    procesar(p.EV_FIN, {"registro": registro.codigo, "marcas": 3, "espectro": None})
+    red = registro.red
+    assert red.longitud == pytest.approx(0.2)
+    assert red.periodo_medio_um == pytest.approx(100.0)
+
+
+@pytest.mark.django_db
+def test_sin_posiciones_la_longitud_sigue_ausente(registro):
+    registro.programa.periodo = None
+    registro.programa.save()
+    _marcar(registro, [None, None, None])
+    assert registro.red.longitud is None
+    assert registro.red.periodo_medio_um is None

@@ -1,0 +1,345 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pi 5 simulada</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --fondo: #f3f4f1; --panel: #ffffff; --borde: #d5d8d1; --texto: #1d2320; --suave: #5d665f;
+    --placa: #17492f; --acento: #116a43; --aviso: #8a5a00; --aviso-fondo: #fff4d6;
+    --error: #a3271d; --error-fondo: #fde8e5; --alto: #e0a100; --bajo: #55605a;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --fondo: #101412; --panel: #1a201d; --borde: #323a35; --texto: #e7ece8; --suave: #a2aca5;
+      --placa: #123d27; --acento: #5fce9b; --aviso: #f0c66c; --aviso-fondo: #33290f;
+      --error: #ff9c91; --error-fondo: #3a1a17; --alto: #ffc533; --bajo: #68736c;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--fondo); color: var(--texto);
+    font: 15px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  header { padding: 16px; border-bottom: 1px solid var(--borde); background: var(--panel); }
+  h1 { margin: 0; font-size: 20px; }
+  h2 { margin: 0 0 12px; font-size: 15px; }
+  header p { margin: 4px 0 0; color: var(--suave); }
+  main {
+    display: grid; gap: 16px; padding: 16px; max-width: 1280px; margin: auto;
+    grid-template-columns: minmax(280px, 340px) minmax(0, 1fr);
+    align-items: start;
+  }
+  @media (max-width: 800px) { main { grid-template-columns: minmax(0, 1fr); } }
+  section { background: var(--panel); border: 1px solid var(--borde); border-radius: 8px; padding: 14px; }
+  .columna { display: grid; gap: 16px; min-width: 0; }
+  .banda { padding: 10px 16px; font-weight: 600; }
+  .banda.error { background: var(--error-fondo); color: var(--error); }
+  [hidden] { display: none !important; }
+
+  .placa { background: var(--placa); border-radius: 6px; padding: 10px; }
+  .conector { display: grid; grid-template-columns: 1fr 1fr; gap: 3px; }
+  .pin {
+    display: flex; align-items: center; gap: 6px; min-height: 28px; padding: 2px 6px;
+    border: 1px solid transparent; border-radius: 4px; background: transparent;
+    color: #e8f2ec; font: 12px/1.1 ui-monospace, Consolas, monospace; text-align: left; width: 100%;
+    min-width: 0;
+  }
+  .pin:nth-child(even) { flex-direction: row-reverse; text-align: right; }
+  button.pin { cursor: pointer; }
+  button.pin:hover, button.pin:focus-visible { border-color: #e8f2ec; }
+  .pin.elegido { border-color: var(--alto); background: rgba(255, 255, 255, .1); }
+  .pin.fijo { color: #9bb9a8; }
+  .pin.en-uso .nombre { font-weight: 700; }
+  .punto { flex: none; width: 12px; height: 12px; border-radius: 50%; background: #39473f; border: 1px solid #0007; }
+  .punto.alto { background: var(--alto); box-shadow: 0 0 6px var(--alto); }
+  .punto.falla { background: #e0483c; }
+  .nombre { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  .tarjetas { display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); }
+  .tarjeta { border: 1px solid var(--borde); border-radius: 8px; padding: 12px; display: grid; gap: 8px; min-width: 0; }
+  .tarjeta.desconectada { border-style: dashed; }
+  .titulo { font-weight: 700; overflow-wrap: anywhere; }
+  .detalle { color: var(--suave); font-size: 13px; overflow-wrap: anywhere; }
+  .lectura { font-size: 20px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .lectura.activo { color: var(--acento); }
+  .nota { color: var(--suave); font-size: 13px; }
+  .fila { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+  button.accion {
+    min-height: 36px; padding: 6px 12px; border-radius: 6px; cursor: pointer; font: inherit;
+    border: 1px solid var(--borde); background: var(--panel); color: var(--texto);
+  }
+  button.accion:hover { border-color: var(--suave); }
+  button.accion[aria-pressed="true"] { background: var(--acento); border-color: var(--acento); color: var(--panel); }
+  input[type="number"] {
+    width: 90px; min-height: 36px; padding: 4px 8px; font: inherit; color: var(--texto);
+    background: var(--panel); border: 1px solid var(--borde); border-radius: 6px;
+  }
+  .vacio { color: var(--suave); }
+  .registro { list-style: none; margin: 0; padding: 0; max-height: 280px; overflow-y: auto; font-size: 13px; }
+  .registro li { display: flex; gap: 8px; padding: 3px 0; border-top: 1px solid var(--borde); overflow-wrap: anywhere; }
+  .registro time { flex: none; color: var(--suave); font-variant-numeric: tabular-nums; }
+  .chip-estado { font-weight: 600; }
+</style>
+</head>
+<body>
+<div id="aviso" class="banda error" role="alert" hidden></div>
+<header>
+  <h1>Raspberry Pi 5 simulada</h1>
+  <p>Solo software y lógica de pines: la electricidad y los tiempos reales se prueban en el laboratorio.</p>
+</header>
+<main>
+  <div class="columna">
+    <section aria-labelledby="t-conector">
+      <h2 id="t-conector">Conector de 40 pines</h2>
+      <div class="placa"><div id="conector" class="conector"></div></div>
+    </section>
+    <section aria-labelledby="t-fallas">
+      <h2 id="t-fallas">Fallas a pedido</h2>
+      <p id="pin-elegido" class="nota">Elegí un GPIO en el conector.</p>
+      <div class="fila">
+        <button id="f-ocupado" class="accion" aria-pressed="false" disabled>Pin ocupado</button>
+        <button id="f-colgado" class="accion" aria-pressed="false" disabled>Pin colgado</button>
+      </div>
+      <div class="fila" style="margin-top: 8px">
+        <button id="f-chip" class="accion" aria-pressed="false">Chip colgado</button>
+        <span id="chip" class="chip-estado"></span>
+      </div>
+    </section>
+  </div>
+  <div class="columna">
+    <section aria-labelledby="t-componentes">
+      <h2 id="t-componentes">Componentes dados de alta en el SCADA</h2>
+      <div id="tarjetas" class="tarjetas"></div>
+      <p id="sin-componentes" class="vacio" hidden>Todavía no hay componentes. Dalos de alta en el SCADA y aparecen acá.</p>
+    </section>
+    <section aria-labelledby="t-registro">
+      <h2 id="t-registro">Lo que pasó en la placa</h2>
+      <ul id="registro" class="registro"></ul>
+    </section>
+  </div>
+</main>
+<script>
+const CONECTOR = [
+  '3V3', '5V', 2, '5V', 3, 'GND', 4, 14, 'GND', 15, 17, 18, 27, 'GND', 22, 23, '3V3', 24, 10, 'GND',
+  9, 25, 11, 8, 'GND', 7, 0, 1, 5, 'GND', 6, 12, 13, 'GND', 19, 16, 26, 20, 'GND', 21,
+];
+const $ = (id) => document.getElementById(id);
+const crear = (etiqueta, clase, texto) => {
+  const nodo = document.createElement(etiqueta);
+  if (clase) nodo.className = clase;
+  if (texto !== undefined) nodo.textContent = texto;
+  return nodo;
+};
+
+let elegido = null;
+let ultimo = null;
+const pines = {};
+const tarjetas = new Map();
+
+function mostrarError(texto) {
+  $('aviso').textContent = texto || '';
+  $('aviso').hidden = !texto;
+}
+
+async function enviar(ruta, datos) {
+  try {
+    const r = await fetch(ruta, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(datos),
+    });
+    if (!r.ok) throw new Error((await r.json()).detail);
+    await refrescar();
+  } catch (e) {
+    mostrarError(`No se pudo aplicar: ${e.message}`);
+  }
+}
+
+function armarConector() {
+  CONECTOR.forEach((valor, i) => {
+    const fisico = i + 1;
+    const esGpio = typeof valor === 'number';
+    const pin = crear(esGpio ? 'button' : 'div', `pin${esGpio ? '' : ' fijo'}`);
+    const punto = crear('span', 'punto');
+    const nombre = crear('span', 'nombre', esGpio ? `GPIO${valor}` : valor);
+    pin.append(punto, nombre);
+    pin.title = `Pin físico ${fisico}`;
+    if (esGpio) {
+      pin.type = 'button';
+      pin.addEventListener('click', () => { elegido = valor; pintar(); });
+      pines[valor] = { pin, punto, nombre };
+    }
+    $('conector').append(pin);
+  });
+}
+
+function nuevaTarjeta(c) {
+  const raiz = crear('article', 'tarjeta');
+  const conexion = crear('button', 'accion', 'Conectar');
+  conexion.type = 'button';
+  conexion.addEventListener('click', () => {
+    const actual = conexion.getAttribute('aria-pressed') === 'true';
+    enviar('/api/conexion', { componente: c.nombre, conectado: !actual });
+  });
+  const lectura = crear('div', 'lectura');
+  const detalle = crear('div', 'detalle');
+  const fila = crear('div', 'fila');
+  fila.append(conexion);
+  raiz.append(crear('div', 'titulo', c.nombre), crear('div', 'detalle', descripcion(c)), lectura, detalle, fila);
+  const partes = { raiz, conexion, lectura, detalle };
+
+  if (c.tipo === 'ENTRADA_GPIO') {
+    partes.contacto = crear('button', 'accion', 'Cerrar contacto');
+    partes.contacto.type = 'button';
+    partes.contacto.addEventListener('click', () => {
+      const actual = partes.contacto.getAttribute('aria-pressed') === 'true';
+      enviar('/api/contacto', { componente: c.nombre, activo: !actual });
+    });
+    fila.append(partes.contacto);
+  }
+  if (c.tipo === 'LM35') {
+    const etiqueta = crear('label', 'fila', 'Temperatura °C ');
+    partes.temperatura = crear('input');
+    partes.temperatura.type = 'number';
+    partes.temperatura.min = -55; partes.temperatura.max = 150; partes.temperatura.step = 0.5;
+    partes.temperatura.addEventListener('change', () => {
+      enviar('/api/temperatura', { componente: c.nombre, valor: Number(partes.temperatura.value) });
+    });
+    etiqueta.append(partes.temperatura);
+    fila.append(etiqueta);
+  }
+  if (c.tipo === 'SHUTTER_GPIO') {
+    raiz.append(crear('p', 'nota', 'Armado es memoria del driver y no pasa por el pin: se ve en el SCADA.'));
+  }
+  return partes;
+}
+
+function descripcion(c) {
+  const conexiones = Object.entries(c.pines).map(([senal, pin]) => `${senal}: GPIO${pin}`);
+  if (c.tipo === 'LM35') {
+    conexiones.push(`MCP3008 canal ${c.parametros.canal}, SPI0 CE${c.parametros.dispositivo_spi}`);
+  }
+  return `${c.tipo} · ${conexiones.join(' · ')}`;
+}
+
+function lectura(c) {
+  const f = c.fisico;
+  switch (c.tipo) {
+    case 'SALIDA_GPIO':
+      return { texto: f.carga_activa ? 'Carga activa' : 'Carga apagada', activo: f.carga_activa };
+    case 'SHUTTER_GPIO':
+      return { texto: f.posicion, activo: f.posicion !== 'CERRADO' };
+    case 'ENTRADA_GPIO':
+      return { texto: `Nivel del pin: ${f.nivel}`, activo: f.contacto && c.conectado };
+    case 'STEPPER_DRV8825':
+      return {
+        texto: `${f.posicion} ${f.unidad} reales`, activo: f.habilitado,
+        detalle: `${f.pasos} pasos · ${f.habilitado ? 'habilitado' : 'deshabilitado'}`,
+      };
+    default:
+      return { texto: `${f.temperatura_c} °C`, activo: c.conectado, detalle: `Código del ADC: ${f.codigo_adc}` };
+  }
+}
+
+function pintarTarjetas(estado) {
+  const vigentes = new Set(estado.componentes.map((c) => c.nombre));
+  for (const [nombre, partes] of tarjetas) {
+    if (!vigentes.has(nombre)) { partes.raiz.remove(); tarjetas.delete(nombre); }
+  }
+  for (const c of estado.componentes) {
+    const firma = JSON.stringify([c.tipo, c.pines, c.parametros]);
+    let partes = tarjetas.get(c.nombre);
+    if (partes && partes.firma !== firma) { partes.raiz.remove(); partes = null; }
+    if (!partes) {
+      partes = nuevaTarjeta(c);
+      partes.firma = firma;
+      tarjetas.set(c.nombre, partes);
+      $('tarjetas').append(partes.raiz);
+    }
+    partes.raiz.classList.toggle('desconectada', !c.conectado);
+    partes.conexion.textContent = c.conectado ? 'Conectado' : 'Conectar';
+    partes.conexion.setAttribute('aria-pressed', String(c.conectado));
+    const l = lectura(c);
+    partes.lectura.textContent = l.texto;
+    partes.lectura.classList.toggle('activo', Boolean(l.activo));
+    partes.detalle.textContent = l.detalle || (c.conectado ? '' : 'Cable suelto: el componente no recibe nada.');
+    if (partes.contacto) {
+      partes.contacto.textContent = c.fisico.contacto ? 'Abrir contacto' : 'Cerrar contacto';
+      partes.contacto.setAttribute('aria-pressed', String(c.fisico.contacto));
+    }
+    if (partes.temperatura && document.activeElement !== partes.temperatura) {
+      partes.temperatura.value = c.fisico.temperatura_c;
+    }
+  }
+  $('sin-componentes').hidden = estado.componentes.length > 0;
+}
+
+function pintar() {
+  if (!ultimo) return;
+  for (const [gpio, nodo] of Object.entries(pines)) {
+    const p = ultimo.pines[gpio];
+    nodo.punto.className = `punto${p.nivel ? ' alto' : ''}${p.falla ? ' falla' : ''}`;
+    nodo.pin.classList.toggle('elegido', Number(gpio) === elegido);
+    nodo.pin.classList.toggle('en-uso', p.componentes.length > 0);
+    nodo.pin.title = [
+      `GPIO${gpio}: nivel ${p.nivel}, ${p.modo}`,
+      ...p.componentes,
+      p.sin_dueno ? 'Sin dueño: conserva el último nivel' : '',
+      p.falla ? `Falla: ${p.falla}` : '',
+    ].filter(Boolean).join('\n');
+  }
+  const pin = elegido === null ? null : ultimo.pines[elegido];
+  $('pin-elegido').textContent = pin
+    ? `GPIO${elegido}: nivel ${pin.nivel}, ${pin.modo}${pin.sin_dueno ? ', sin dueño' : ''}.`
+    : 'Elegí un GPIO en el conector.';
+  for (const tipo of ['ocupado', 'colgado']) {
+    const boton = $(`f-${tipo}`);
+    boton.disabled = !pin;
+    boton.setAttribute('aria-pressed', String(Boolean(pin && pin.falla === tipo)));
+  }
+  $('f-chip').setAttribute('aria-pressed', String(ultimo.chip.colgado));
+  $('chip').textContent = ultimo.chip.abierto ? 'Controlador conectado' : 'Controlador sin conectar';
+}
+
+function pintarRegistro(estado) {
+  const clave = JSON.stringify(estado.registro);
+  if (clave === pintarRegistro.previo) return;
+  pintarRegistro.previo = clave;
+  $('registro').replaceChildren(...estado.registro.map((e) => {
+    const fila = crear('li');
+    fila.append(crear('time', '', e.hora), crear('span', '', e.texto));
+    return fila;
+  }));
+}
+
+async function refrescar() {
+  try {
+    const r = await fetch('/api/estado', { cache: 'no-store' });
+    ultimo = await r.json();
+    mostrarError(ultimo.error_config ? `Configuración inválida: ${ultimo.error_config}` : '');
+    pintarTarjetas(ultimo);
+    pintarRegistro(ultimo);
+    pintar();
+  } catch (e) {
+    mostrarError('Sin respuesta del simulador.');
+  }
+}
+
+for (const tipo of ['ocupado', 'colgado']) {
+  $(`f-${tipo}`).addEventListener('click', (ev) => {
+    const activo = ev.currentTarget.getAttribute('aria-pressed') !== 'true';
+    enviar('/api/falla', { tipo, activo, gpio: elegido });
+  });
+}
+$('f-chip').addEventListener('click', (ev) => {
+  const activo = ev.currentTarget.getAttribute('aria-pressed') !== 'true';
+  enviar('/api/falla', { tipo: 'chip_colgado', activo });
+});
+
+armarConector();
+refrescar();
+setInterval(refrescar, 300);
+</script>
+</body>
+</html>

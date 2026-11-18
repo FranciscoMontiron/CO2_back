@@ -8,7 +8,7 @@
     "desplazador_x": {
       "tipo": "STEPPER_DRV8825",
       "pines": {"pin_step": 22, "pin_dir": 23, "pin_enable": 24},
-      "parametros": {"pasos_por_mm": 200, "carrera_max_mm": 300, "velocidad_mm_s": 1},
+      "parametros": {"unidad": "mm", "pasos_por_unidad": 200, "minimo": 0, "maximo": 300, "velocidad_maxima": 1},
       "estado": "Eliminado"
     },
     "Sensor de temperatura": {

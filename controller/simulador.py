@@ -20,11 +20,14 @@ crece con la cantidad de marcas (acoplamiento ``cos^2(kappa * N)``).
 
 from __future__ import annotations
 
+import asyncio
 import math
 import random
 
-from controller.hal_base import HalBase
+from controller.hal_base import HalBase, OperacionRechazada
 from controller import protocolo as p
+from controller.hardware_config import validar_configuracion, validar_operacion
+from controller.programa import INVENTARIO_SIMULADO
 import logging
 
 logger = logging.getLogger("controller.simulador")
@@ -90,6 +93,12 @@ class HalSimulado(HalBase):
         self._posicion_objetivo_mm = 0.0
         self._alineacion = 0.0  # 0 = desalineada, 1 = alineada
         self._alineando = False
+        # Operacion por componente (``operar``): mismas fichas que los drivers GPIO.
+        self.velocidad = 1.0  # factor de aceleracion del tiempo; lo fija ``Maquina``
+        self.angulo_rotacion = 0.0
+        self._velocidad_motor_mm_s = VELOCIDAD_MOTOR_MM_S
+        self._referenciados: set[str] = set()
+        self._inventario = validar_configuracion(INVENTARIO_SIMULADO)
 
     # ── Actuadores ──────────────────────────────────────────────────────────
 
@@ -102,17 +111,141 @@ class HalSimulado(HalBase):
         self._alineando = False
         self._alineacion = 0.0
 
-    def mover_a(self, posicion_mm: float) -> float:
+    def mover_a(self, posicion_mm: float, velocidad: float | None = None) -> float:
         """Ordena al motor ir a una posicion.
 
         Args:
             posicion_mm: Posicion destino del desplazador lineal.
+            velocidad: mm/s del movimiento; sin ella rige la velocidad por defecto
+                del simulador (la llamada heredada del bucle fijo).
 
         Returns:
             Cuanto tarda el movimiento, en segundos de tiempo simulado.
         """
         self._posicion_objetivo_mm = posicion_mm
-        return abs(posicion_mm - self.posicion_mm) / VELOCIDAD_MOTOR_MM_S
+        self._velocidad_motor_mm_s = velocidad or VELOCIDAD_MOTOR_MM_S
+        return abs(posicion_mm - self.posicion_mm) / self._velocidad_motor_mm_s
+
+    # ── Operacion por componente ────────────────────────────────────────────
+
+    def inventario(self) -> dict:
+        """Componentes virtuales contra los que se valida un programa."""
+        return validar_configuracion(INVENTARIO_SIMULADO)
+
+    async def operar(self, componente: str, comando: str, argumentos: dict) -> dict:
+        """Ejecuta una orden sobre la fisica simulada, con los rechazos de los drivers.
+
+        Args:
+            componente: ``laser``, ``shutter``, ``motor_x`` o ``motor_rotacion``.
+            comando: Operacion de la ficha del componente.
+            argumentos: Argumentos de la operacion.
+
+        Returns:
+            La salida del comando (``duracion_real_ms`` y ``cancelado`` en un pulso).
+
+        Raises:
+            OperacionRechazada: Si la orden no es valida o el estado no la permite.
+        """
+        config = self._inventario["componentes"].get(componente)
+        if config is None or config["estado"] != "Vigente":
+            raise OperacionRechazada(f"{componente}.{comando}: el componente no existe.")
+        try:
+            validar_operacion(config, comando, argumentos)
+            if componente == "laser":
+                self.laser = comando == "encender"
+                return {}
+            if componente == "shutter":
+                return await self._operar_shutter(comando, argumentos)
+            return await self._operar_motor(componente, config, comando, argumentos)
+        except ValueError as exc:
+            raise OperacionRechazada(f"{componente}.{comando}: {exc}") from exc
+
+    def posicion_de(self, componente: str) -> float | None:
+        """Posición del motor virtual: mm en ``motor_x``, grados en ``motor_rotacion``."""
+        if componente == "motor_x":
+            return self.posicion_mm
+        if componente == "motor_rotacion":
+            return self.angulo_rotacion
+        return None
+
+    def apagar_componentes(self) -> None:
+        """Parada segura de un programa: shutter cerrado y desarmado, láser y motores."""
+        self.shutter_abierto = False
+        self.shutter_armado = False
+        self.laser = False
+        # Frenar donde está; como el driver real, se pierde la referencia.
+        self._posicion_objetivo_mm = self.posicion_mm
+        self._velocidad_motor_mm_s = VELOCIDAD_MOTOR_MM_S
+        self._referenciados.clear()
+
+    async def _operar_shutter(self, comando: str, argumentos: dict) -> dict:
+        if comando == "armar":
+            self.armar_shutter()
+        elif comando == "desarmar":
+            self.shutter_armado = False
+            self.shutter_abierto = False
+        elif comando == "cerrar":
+            self.shutter_abierto = False
+        else:
+            if not self.shutter_armado:
+                raise ValueError("Arme el shutter antes de abrirlo.")
+            if comando == "abrir":
+                self.shutter_abierto = True
+            else:
+                duracion = argumentos["duracion_ms"]
+                self.shutter_abierto = True
+                try:
+                    await asyncio.sleep(duracion / 1000 / self.velocidad)
+                finally:
+                    self.shutter_abierto = False
+                return {"duracion_real_ms": duracion, "cancelado": False}
+        return {}
+
+    async def _operar_motor(self, nombre: str, config: dict, comando: str, argumentos: dict) -> dict:
+        params = config["parametros"]
+        if comando == "detener":
+            self._referenciados.discard(nombre)
+            return {}
+        actual = self.posicion_mm if nombre == "motor_x" else self.angulo_rotacion
+        if comando == "referenciar":
+            destino = argumentos["posicion"]
+            self._referenciados.add(nombre)
+            if nombre == "motor_x":
+                self.posicion_mm = self._posicion_objetivo_mm = destino
+            else:
+                self.angulo_rotacion = destino
+            return {}
+        if nombre not in self._referenciados:
+            raise ValueError("Referencie el eje y declare su posición antes de mover.")
+        destino = argumentos["posicion"] if comando == "mover_a" else actual + argumentos["delta"]
+        if not params["minimo"] <= destino <= params["maximo"]:
+            raise ValueError(
+                f"El destino {destino} queda fuera de [{params['minimo']}, {params['maximo']}]."
+            )
+        try:
+            if nombre == "motor_x":
+                segundos = self.mover_a(destino, argumentos["velocidad"])
+                limite = segundos / self.velocidad + 5
+                esperado = 0.0
+                while not self.motor_en_destino:
+                    if esperado > limite:
+                        raise ValueError("El motor no llegó al destino en el plazo.")
+                    await asyncio.sleep(0.005)
+                    esperado += 0.005
+            else:
+                segundos = abs(destino - actual) / argumentos["velocidad"]
+                await asyncio.sleep(segundos / self.velocidad)
+                self.angulo_rotacion = destino
+        except BaseException:
+            # Como el driver real: un movimiento fallido o cancelado pierde la referencia.
+            self._referenciados.discard(nombre)
+            if nombre == "motor_x":
+                self._posicion_objetivo_mm = self.posicion_mm
+            raise
+        finally:
+            if nombre == "motor_x":
+                self._velocidad_motor_mm_s = VELOCIDAD_MOTOR_MM_S
+        return {}
 
     # ── Sensores ────────────────────────────────────────────────────────────
 
@@ -219,7 +352,7 @@ class HalSimulado(HalBase):
         if self._alineando and self._alineacion < 1.0:
             self._alineacion = min(1.0, self._alineacion + dt / DURACION_ALINEACION_S)
 
-        paso = VELOCIDAD_MOTOR_MM_S * dt
+        paso = self._velocidad_motor_mm_s * dt
         delta = self._posicion_objetivo_mm - self.posicion_mm
         self.posicion_mm = (
             self._posicion_objetivo_mm

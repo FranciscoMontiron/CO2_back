@@ -8,39 +8,37 @@ import re
 import tempfile
 from pathlib import Path
 
-CATALOGO = {
-    "SHUTTER_GPIO": {
-        "pines": ["pin_señal"],
-        "parametros": {"activo_alto": True},
-        "operaciones": {"armar": {}, "desarmar": {}, "abrir": {}, "cerrar": {}},
-    },
-    "SALIDA_GPIO": {
-        "pines": ["pin_señal"],
-        "parametros": {"activo_alto": True},
-        "operaciones": {"encender": {}, "apagar": {}},
-    },
-    "ENTRADA_GPIO": {
-        "pines": ["pin_señal"],
-        "parametros": {"pull_up": True},
-        "operaciones": {},
-    },
-    "STEPPER_DRV8825": {
-        "pines": ["pin_step", "pin_dir", "pin_enable"],
-        "parametros": {"pasos_por_mm": 200, "carrera_max_mm": 300, "velocidad_mm_s": 1},
-        "operaciones": {
-            "referenciar": {"posicion_mm": "numero"},
-            "mover": {"posicion_mm": "numero"},
-            "deshabilitar": {},
-        },
-    },
-    "LM35": {
-        "pines": [],
-        "parametros": {"adc": "MCP3008", "canal": 0, "dispositivo_spi": 0, "vref": 3.3},
-        "operaciones": {},
-        "ayuda": "Salida analógica al MCP3008, nunca directamente a un GPIO. "
-        "SPI0 reserva GPIO9/10/11 y GPIO8 (CS0) o GPIO7 (CS1).",
-    },
-}
+
+def _registro():
+    """Registro de drivers, importándolos a demanda para evitar el ciclo de imports."""
+    from controller import drivers  # noqa: F401 - registra los drivers
+    from controller.factory import REGISTRO_COMPONENTES
+
+    return REGISTRO_COMPONENTES
+
+
+def comandos_de(tipo):
+    """Operaciones y argumentos de un tipo; vacío si el tipo no existe."""
+    clase = _registro().get(tipo)
+    return clase.COMANDOS if clase else {}
+
+
+def catalogo():
+    """Catálogo público construido desde la ficha de cada driver registrado."""
+    registro = _registro()
+    return {
+        tipo: {
+            "descripcion": clase.DESCRIPCION,
+            "pines": list(clase.PINES),
+            "parametros": dict(clase.PARAMETROS),
+            "operaciones": {op: dict(args) for op, args in clase.COMANDOS.items()},
+            "campos": dict(clase.CAMPOS),
+            "contrato": clase.CONTRATO,
+            "ayuda": clase.AYUDA,
+        }
+        for tipo, clase in registro.items()
+    }
+
 
 PIN_A_BCM = dict(
     zip(
@@ -135,6 +133,35 @@ def numero(valor, nombre, minimo, maximo):
     return valor
 
 
+CLAVES_OPCIONES = ("rol", "ganancia", "offset", "inhibir_en_prueba")
+
+
+def _opciones(original, clase):
+    """Valida rol, ganancia, offset e inhibir_en_prueba de un componente Vigente."""
+    from controller.roles import ROLES, campo_de
+
+    opciones, rol = {}, original.get("rol")
+    if "rol" in original:
+        if not isinstance(rol, str) or rol not in ROLES:
+            raise ValueError(f"Rol desconocido: {rol!r}. Válidos: {sorted(ROLES)}.")
+        if rol == "SHUTTER":
+            if not all(c in clase.CAMPOS for c in ROLES[rol]["campos"]):
+                raise ValueError(f"El driver no declara los campos del rol {rol}.")
+        elif campo_de(rol, clase.CAMPOS) is None:
+            raise ValueError(f"El driver no declara ningún campo aceptado por el rol {rol}.")
+        opciones["rol"] = rol
+    for clave in ("ganancia", "offset"):
+        if clave in original:
+            if rol is None or ROLES[rol]["clase"] != "numero":
+                raise ValueError(f"{clave} solo se admite con un rol numérico.")
+            opciones[clave] = numero(original[clave], clave, -1e9, 1e9)
+    if "inhibir_en_prueba" in original:
+        if type(original["inhibir_en_prueba"]) is not bool:
+            raise ValueError("inhibir_en_prueba debe ser booleano.")
+        opciones["inhibir_en_prueba"] = original["inhibir_en_prueba"]
+    return opciones
+
+
 def validar_configuracion(datos):
     """Normaliza o rechaza toda la configuración antes de tocar hardware."""
     if not isinstance(datos, dict) or set(datos) != {"componentes"}:
@@ -142,14 +169,15 @@ def validar_configuracion(datos):
     componentes = datos["componentes"]
     if not isinstance(componentes, dict) or len(componentes) > 64:
         raise ValueError("componentes debe ser un objeto con hasta 64 instancias.")
-    salida, ocupados, canales = {}, {}, set()
+    registro = _registro()
+    salida, ocupados, contexto = {}, {}, {}
     for nombre, original in componentes.items():
         if not isinstance(nombre, str) or not nombre.strip() or len(nombre) > 100:
             raise ValueError("Cada componente necesita un nombre de 1 a 100 caracteres.")
         try:
             if not isinstance(original, dict):
                 raise ValueError("La definición debe ser un objeto.")
-            if set(original) - {"tipo", "pines", "parametros", "estado"}:
+            if set(original) - {"tipo", "pines", "parametros", "estado", *CLAVES_OPCIONES}:
                 raise ValueError("Campos desconocidos en la definición.")
             tipo, estado = original.get("tipo"), original.get("estado")
             if not isinstance(tipo, str) or estado not in ("Vigente", "Eliminado"):
@@ -160,61 +188,46 @@ def validar_configuracion(datos):
             if estado == "Eliminado":
                 salida[nombre] = original.copy()
                 continue
-            if tipo not in CATALOGO:
+            clase = registro.get(tipo)
+            if clase is None:
                 raise ValueError(f"Driver {tipo!r} no soportado. Consulte /hardware/catalogo/.")
-            esquema = CATALOGO[tipo]
-            if tipo == "LM35" and (pines or parametros.get("adc") != "MCP3008"):
-                raise ValueError(
-                    "LM35 requiere ADC MCP3008: pines={}, "
-                    "parametros.adc=MCP3008 y canal=0..7; Datos no es GPIO."
-                )
-            if set(pines) != set(esquema["pines"]):
-                raise ValueError(f"Los pines requeridos son: {esquema['pines']}.")
-            if set(parametros) - set(esquema["parametros"]):
+            parametros = clase.prevalidar(pines, parametros)
+            if set(pines) != set(clase.PINES):
+                raise ValueError(f"Los pines requeridos son: {clase.PINES}.")
+            if set(parametros) - set(clase.PARAMETROS):
                 raise ValueError("Parámetros desconocidos para este driver.")
             pines = {k: pin_bcm(v) for k, v in pines.items()}
-            params = {**esquema["parametros"], **parametros}
+            params = {**clase.PARAMETROS, **parametros}
             for bandera in ("activo_alto", "pull_up"):
                 if bandera in params and type(params[bandera]) is not bool:
                     raise ValueError(f"{bandera} debe ser booleano.")
-            recurso, usados = f"gpio:{nombre}", list(pines.values())
-            if len(usados) != len(set(usados)):
-                raise ValueError("Dos señales del componente usan el mismo GPIO.")
-            if tipo == "STEPPER_DRV8825":
-                numero(params["pasos_por_mm"], "pasos_por_mm", 1, 100000)
-                numero(params["carrera_max_mm"], "carrera_max_mm", 0.001, 10000)
-                numero(params["velocidad_mm_s"], "velocidad_mm_s", 0.001, 100)
-                if params["pasos_por_mm"] * params["velocidad_mm_s"] > 2000:
-                    raise ValueError("La velocidad excede 2000 pasos/s del driver manual.")
-            if tipo == "LM35":
-                for campo, maximo in (("canal", 7), ("dispositivo_spi", 1)):
-                    if type(params[campo]) is not int or not 0 <= params[campo] <= maximo:
-                        raise ValueError(f"{campo} debe ser un entero entre 0 y {maximo}.")
-                numero(params["vref"], "vref", 0.1, 3.3)
-                direccion = (params["dispositivo_spi"], params["canal"])
-                if direccion in canales:
-                    raise ValueError("Canal del ADC duplicado.")
-                canales.add(direccion)
-                usados, recurso = [9, 10, 11, 8 if params["dispositivo_spi"] == 0 else 7], "SPI0"
+            usados, recurso = clase.validar_parametros(nombre, pines, params, contexto)
             for pin in usados:
                 if pin in ocupados and not (recurso == "SPI0" == ocupados[pin][1]):
                     raise ValueError(f"GPIO{pin} ya está utilizado por {ocupados[pin][0]}.")
                 ocupados[pin] = (nombre, recurso)
             salida[nombre] = {"tipo": tipo, "pines": pines, "parametros": params, "estado": estado}
+            salida[nombre].update(_opciones(original, clase))
         except ValueError as exc:
             raise ValueError(f"{nombre}: {exc}") from exc
+    roles = {}
+    for nombre, comp in salida.items():
+        rol = comp.get("rol")
+        if comp["estado"] == "Vigente" and rol is not None:
+            if rol in roles:
+                raise ValueError(f"{nombre}: el rol {rol} ya lo tiene {roles[rol]}.")
+            roles[rol] = nombre
     return {"componentes": salida}
 
 
 def validar_operacion(config, operacion, argumentos):
     """Valida una orden al recibirla y antes de ejecutarla."""
-    operaciones = CATALOGO.get(config["tipo"], {}).get("operaciones", {})
+    operaciones = comandos_de(config["tipo"])
     if not isinstance(operacion, str) or operacion not in operaciones:
         raise ValueError("Operación no soportada por el componente.")
     if not isinstance(argumentos, dict) or set(argumentos) != set(operaciones[operacion]):
         raise ValueError(f"Argumentos esperados: {list(operaciones[operacion])}.")
-    if "posicion_mm" in argumentos:
-        numero(argumentos["posicion_mm"], "posicion_mm", 0, config["parametros"]["carrera_max_mm"])
+    _registro()[config["tipo"]].validar_argumentos(config, operacion, argumentos)
 
 
 def revision(datos):

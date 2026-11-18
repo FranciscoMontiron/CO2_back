@@ -13,7 +13,7 @@ from comun.enums import TipoRol
 from comun.permisos import escritura_solo_para
 from controller import protocolo as p
 from controller.hardware_config import (
-    CATALOGO,
+    catalogo,
     guardar_archivo,
     leer_archivo,
     revision,
@@ -37,7 +37,7 @@ class HardwareCatalogoView(APIView):
 
     def get(self, request):
         """Entrega el recurso solicitado sin acceder al hardware."""
-        return Response(CATALOGO)
+        return Response(catalogo())
 
 
 class HardwareConfigView(APIView):

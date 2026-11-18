@@ -10,7 +10,16 @@ class PasoInline(admin.TabularInline):
 
     model = Paso
     extra = 1
-    fields = ("orden", "etiqueta", "parametro", "repeticiones", "tiempo_de_pulso")
+    fields = (
+        "orden",
+        "padre",
+        "tipo",
+        "componente",
+        "comando",
+        "argumentos",
+        "repeticiones",
+        "tiempo_de_pulso",
+    )
     ordering = ("orden",)
 
 

@@ -191,27 +191,52 @@ class Red(models.Model):
         """Cantidad de marcas grabadas sobre la red."""
         return self.marcas.count()
 
+    def _posiciones_um(self) -> list[float]:
+        """Posiciones registradas de las marcas, en orden (las ausentes se omiten)."""
+        return list(
+            self.marcas.filter(posicion__isnull=False)
+            .order_by("numero")
+            .values_list("posicion", flat=True)
+        )
+
     @property
     def longitud(self) -> float | None:
         """Longitud de la red en mm.
 
-        Se calcula como ``cantidad de marcas x periodo``, el invariante que el
-        Diagrama de Clases deja asentado. El periodo lo define el programa, asi
-        que si la red no tiene fabricacion asociada no hay con que calcularlo.
+        Si el programa define un perfil de periodo (programas viejos) es
+        ``cantidad de marcas x periodo``. Si no, sale de las marcas reales:
+        ``max - min`` de su posicion, con al menos dos marcas posicionadas. Sin
+        corrida asociada no se deriva nada.
 
         Returns:
             La longitud en mm, o ``None`` si no se puede derivar.
         """
         registro = self.registros.first()
-        if registro is None or registro.programa.periodo is None:
+        if registro is None:
             return None
-        periodo = registro.programa.periodo
-        marcas = self.cantidad_marcas
-        if marcas == 0:
-            return 0.0
-        # calcular_distancia devuelve micrometros acumulados; la red se expresa
-        # en milimetros, que es como la mide el laboratorio.
-        return periodo.distancia_acumulada(marcas) / 1000.0
+        if registro.programa.periodo is not None:
+            marcas = self.cantidad_marcas
+            if marcas == 0:
+                return 0.0
+            # calcular_distancia devuelve micrometros acumulados; la red se
+            # expresa en milimetros, que es como la mide el laboratorio.
+            return registro.programa.periodo.distancia_acumulada(marcas) / 1000.0
+        posiciones = self._posiciones_um()
+        if len(posiciones) < 2:
+            return None
+        return (max(posiciones) - min(posiciones)) / 1000.0
+
+    @property
+    def periodo_medio_um(self) -> float | None:
+        """Espaciado medio entre marcas consecutivas, en um.
+
+        Returns:
+            El promedio, o ``None`` con menos de dos marcas posicionadas.
+        """
+        posiciones = self._posiciones_um()
+        if len(posiciones) < 2:
+            return None
+        return (posiciones[-1] - posiciones[0]) / (len(posiciones) - 1)
 
     def resonancia_principal(self) -> PicoDeAtenuacion | None:
         """Devuelve la resonancia principal de la red.
@@ -230,10 +255,10 @@ class Marca(models.Model):
         Red, verbose_name="red", on_delete=models.CASCADE, related_name="marcas"
     )
     numero = models.PositiveIntegerField("numero")
-    posicion = models.FloatField("posicion [um]")
+    posicion = models.FloatField("posicion [um]", null=True, blank=True)
     cant_pulsos = models.PositiveIntegerField("cantidad de pulsos")
-    ciclo_trabajo = models.FloatField("ciclo de trabajo [%]")
-    tiempo_de_pulso = models.PositiveIntegerField("tiempo de pulso [ms]")
+    ciclo_trabajo = models.FloatField("ciclo de trabajo [%]", null=True, blank=True)
+    tiempo_de_pulso = models.FloatField("tiempo de pulso real [ms]")
 
     class Meta:
         """Metadatos del modelo."""

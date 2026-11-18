@@ -74,9 +74,9 @@ def al_grabar_marca(datos: dict) -> None:
         red=registro.red,
         numero=datos["numero"],
         defaults={
-            "posicion": datos["posicion_um"],
+            "posicion": datos.get("posicion_um"),
             "cant_pulsos": datos["cant_pulsos"],
-            "ciclo_trabajo": datos["ciclo_trabajo"],
+            "ciclo_trabajo": datos.get("ciclo_trabajo"),
             "tiempo_de_pulso": datos["tiempo_de_pulso"],
         },
     )
@@ -161,12 +161,16 @@ def al_terminar(datos: dict) -> None:
 
 
 def al_abortar(datos: dict) -> None:
-    """Cierra el ensayo como abortado."""
+    """Cierra el ensayo como abortado; su red, si la hay, queda INVIABLE.
+
+    También sin marcas (p. ej. un arranque que el controlador rechazó): la red no
+    se borra, para no reutilizar su código, pero no queda como VIABLE en el lote.
+    """
     registro = _registro(datos.get("registro"))
     if registro is None or registro.estado != EstadoEjecucion.EN_CURSO:
         return
     registro.abortar(datos.get("motivo", "Abortado."))
-    if registro.red is not None and datos.get("marcas"):
+    if registro.red is not None:
         registro.red.estado = EstadoRed.INVIABLE
         registro.red.save(update_fields=["estado"])
 

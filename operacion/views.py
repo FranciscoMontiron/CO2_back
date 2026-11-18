@@ -19,7 +19,7 @@ from comun.permisos import escritura_solo_para
 from controller import protocolo
 from fabricacion.models import Lote, Red
 from programas.models import Programa
-from programas.serializers import ProgramaSerializer
+from programas.serializers import arbol_de_pasos
 from trazabilidad.models import RegistroDeFabricacion
 
 from . import control
@@ -227,35 +227,35 @@ class ControlComandoView(APIView):
 class ControlIniciarView(APIView):
     """``POST /api/control/iniciar/``: ``{"programa": "PRG-001", "modo": "REAL"}``.
 
-    Crea el registro del ensayo (y la red, en modo REAL) y le manda el programa
-    al controlador. Valida contra la ultima telemetria que el sistema este LISTO
-    con el laser encendido: si no, el ensayo nunca arrancaria y quedaria un
-    registro huerfano.
+    Crea el registro del ensayo (y la red, en modo REAL) y le manda al
+    controlador el arbol de pasos del programa. Valida contra la ultima telemetria que no
+    haya emergencia, grabado en curso ni umbral bloqueante, y en simulado que el
+    sistema este LISTO (en GPIO no hay LISTO); el resto de las
+    condiciones (y la validacion del arbol contra el hardware vigente) las decide
+    el controlador, que aborta el registro si rechaza.
     """
 
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
         """Arranca la ejecucion de un programa."""
-        if settings.CONTROLLER_HAL == "gpio":
-            return Response(
-                {
-                    "detail": "Modo GPIO en puesta en marcha manual. "
-                    "Configure y pruebe los componentes antes de habilitar grabado automático."
-                },
-                status=status.HTTP_409_CONFLICT,
-            )
         telemetria = control.ultima_telemetria()
         if telemetria is None or not control.controlador_vivo():
             return _sin_controlador()
-        if telemetria["estado"] != "LISTO" or not telemetria["actuadores"]["laser"]:
+        if telemetria["estado"] in ("EMERGENCIA", "GRABANDO"):
             return Response(
-                {"detail": "El sistema tiene que estar LISTO y con el laser encendido."},
+                {"detail": f"El sistema esta en {telemetria['estado']}: no se puede iniciar."},
                 status=status.HTTP_409_CONFLICT,
             )
         if telemetria.get("bloqueado"):
             return Response(
                 {"detail": "Hay un umbral excedido que bloquea los comandos."},
+                status=status.HTTP_409_CONFLICT,
+            )
+        if settings.CONTROLLER_HAL != "gpio" and telemetria["estado"] != "LISTO":
+            # En simulado el controlador rechazaria: no se crea el registro en vano.
+            return Response(
+                {"detail": "El programa solo arranca con el sistema LISTO."},
                 status=status.HTTP_409_CONFLICT,
             )
 
@@ -267,8 +267,6 @@ class ControlIniciarView(APIView):
             return Response({"detail": "Programa inexistente o sin validar."}, status=400)
 
         registro = _crear_registro(programa, modo, request.user, request.data.get("lote"))
-        datos_programa = ProgramaSerializer(programa).data
-        periodo = programa.periodo
         try:
             control.enviar(
                 protocolo.INICIAR,
@@ -278,16 +276,7 @@ class ControlIniciarView(APIView):
                     "programa": {
                         "codigo": programa.codigo,
                         "nombre": programa.nombre,
-                        "potencia_objetivo_mw": datos_programa["potencia_objetivo_mw"],
-                        "duracion_pulso_ms": datos_programa["duracion_pulso_ms"],
-                        "pulsos": datos_programa["pulsos"],
-                        "criterio_fin": programa.criterio_fin,
-                        "periodo": {
-                            "tipo": periodo.tipo,
-                            "base_um": periodo.periodo_base,
-                            "incremento_um": periodo.incremento,
-                            "factor": periodo.factor,
-                        },
+                        "pasos": arbol_de_pasos(programa),
                     },
                 },
                 request.user,

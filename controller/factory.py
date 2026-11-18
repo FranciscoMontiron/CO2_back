@@ -3,8 +3,49 @@
 import threading
 
 
+MOTOR_CONTRATO = {
+    "comandos": {
+        "referenciar": {"posicion": "numero"},
+        "mover_a": {"posicion": "numero", "velocidad": "numero"},
+        "mover": {"delta": "numero", "velocidad": "numero"},
+        "detener": {},
+    },
+    "campos": {
+        "posicion": "numero",
+        "en_movimiento": "booleano",
+        "referenciado": "booleano",
+        "habilitado": "booleano",
+    },
+}
+
+
 class BaseComponente:
     """Driver síncrono ejecutado exclusivamente por el gestor de hardware."""
+
+    DESCRIPCION: str = ""
+    PINES: list[str] = []
+    PARAMETROS: dict = {}
+    COMANDOS: dict[str, dict[str, str]] = {}
+    CAMPOS: dict[str, str] = {}
+    RECURSO: str | None = None
+    CONTRATO: str | None = None
+    AYUDA: str = ""
+
+    @classmethod
+    def prevalidar(cls, pines, parametros):
+        """Gancho previo a la validación; devuelve los parámetros, posiblemente normalizados."""
+        return parametros
+
+    @classmethod
+    def validar_parametros(cls, nombre, pines, params, contexto):
+        """Valida los parámetros; devuelve los GPIO usados y el recurso que ocupan.
+
+        `contexto` se comparte durante una misma validación de configuración.
+        """
+        usados = list(pines.values())
+        if len(usados) != len(set(usados)):
+            raise ValueError("Dos señales del componente usan el mismo GPIO.")
+        return usados, cls.RECURSO or f"gpio:{nombre}"
 
     def __init__(self, nombre, config, backend):
         """Inicializa el estado y las dependencias de la instancia."""
@@ -12,7 +53,15 @@ class BaseComponente:
         self.parametros, self.pines = config["parametros"], config["pines"]
         self.cancelar = threading.Event()
         self.dispositivos = []
-        self.recurso = "SPI0" if config["tipo"] == "LM35" else f"gpio:{nombre}"
+        self.recurso = self.RECURSO or f"gpio:{nombre}"
+
+    @classmethod
+    def validar_argumentos(cls, config, comando, argumentos):
+        """Gancho de validación de los argumentos de una orden; por defecto no hace nada."""
+
+    def plazo(self, comando, argumentos):
+        """Segundos máximos que puede tardar la orden; por defecto cinco."""
+        return 5.0
 
     def inicializar(self):
         """Reserva recursos e inicializa el dispositivo en estado seguro."""

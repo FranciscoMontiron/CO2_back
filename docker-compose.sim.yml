@@ -1,0 +1,52 @@
+# ─────────────────────────────────────────────────────────────────────────────
+#  Override del simulador de Pi 5: el controlador corre en modo gpio contra el
+#  contenedor pi-sim, sin hardware. Guía en docs/simulador-pi5.md.
+#
+#    docker compose -p co2sim -f docker-compose.yml -f docker-compose.sim.yml up -d --build
+#
+#  Solo para la PC de desarrollo: no combinar con docker-compose.pi.yml.
+# ─────────────────────────────────────────────────────────────────────────────
+
+services:
+  pi-sim:
+    platform: ${TARGET_PLATFORM:-linux/arm64}
+    build:
+      context: .
+      dockerfile: docker/pi_sim/Dockerfile
+    restart: unless-stopped
+    environment:
+      HARDWARE_CONFIG_PATH: /app/hardware/hardware_config.json
+    volumes:
+      - hardware_config:/app/hardware:ro
+    ports:
+      # La página no tiene autenticación: se publica solo en esta máquina.
+      - "127.0.0.1:${PI_SIM_PUERTO_PAGINA:-8091}:8090"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://127.0.0.1:8090/healthz', timeout=2)"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks: [co2net]
+
+  controller:
+    build:
+      context: .
+      dockerfile: docker/pi_sim/controller.Dockerfile
+    environment:
+      CONTROLLER_HAL: gpio
+      PI_SIM_HOST: pi-sim
+      PI_SIM_PUERTO: "9000"
+    depends_on:
+      pi-sim: { condition: service_healthy }
+
+  api:
+    environment:
+      CONTROLLER_HAL: gpio
+
+  ws:
+    environment:
+      CONTROLLER_HAL: gpio
+
+  eventos:
+    environment:
+      CONTROLLER_HAL: gpio

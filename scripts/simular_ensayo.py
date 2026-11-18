@@ -111,11 +111,12 @@ def grabar(cliente: Cliente, programa: str) -> str:
     while True:
         e = cliente.estado()
         ej = e["ejecucion"]
-        if ej and ej["pulso"] != ultimo:
-            ultimo = ej["pulso"]
+        if ej and ej["acciones"] != ultimo:
+            ultimo = ej["acciones"]
             v = e["variables"]
             print(
-                f"   pulso {ej['pulso']:>3}/{ej['pulsos']:<3} {ej['distancia_mm']:6.2f} mm"
+                f"   accion {ej['acciones']:>4}/{ej['total']:<4} pulsos {ej['pulsos']:>3}"
+                f"   {ej['ubicacion']}"
                 f"   agua {v['TEMPERATURA_AGUA']:5.1f} °C   laser {v['POTENCIA_LASER']:4.1f} W"
                 f"   fibra {e['extra']['potencia_optica_mw']:5.2f} mW"
             )

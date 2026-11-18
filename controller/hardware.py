@@ -2,6 +2,7 @@
 
 import asyncio
 import copy
+import logging
 import threading
 import time
 from collections import OrderedDict
@@ -11,13 +12,16 @@ from uuid import uuid4
 from controller import protocolo as p
 from controller.drivers import GpioBackend
 from controller.factory import HardwareFactory
+from controller.hal_base import OperacionRechazada
 from controller.hardware_config import (
-    CATALOGO,
+    comandos_de,
     leer_archivo,
     revision,
     validar_configuracion,
     validar_operacion,
 )
+
+logger = logging.getLogger("controller.hardware")
 
 
 def ahora():
@@ -77,18 +81,31 @@ class GestorHardware:
         self.error_config = None
         self.aplicando = False
         self.emergencia = False
+        self.causa_parada = None  # qué falló, si el gestor se detuvo solo
         self.cerrado = False
         self.generacion = 0
-        self.actual = None
+        self._ordenes = {}  # id -> (orden, tarea): aceptadas por el despachador, sin terminar
+        self._ejecutando = {}  # id -> orden: las que tienen su recurso y tocan el driver
+        self._turnos = {}  # recurso -> asyncio.Lock: FIFO de escrituras por recurso
         self._parando = None
         self._locks = {}
         self._async_locks = {}
         self._io = set()
         self._cuarentena = set()
+        self._esperas = {}
         self._ciclo = time.monotonic()
         self.emitir = lambda tipo, datos: None
 
-    def _resultado(self, cmd, estado, detalle=None):
+    @property
+    def actual(self):
+        """Primera orden que está tocando un driver, o None (compatibilidad)."""
+        return next(iter(self._ejecutando.values()), None)
+
+    def _pendientes(self):
+        """Órdenes aceptadas que todavía no terminaron (en cola o en ejecución)."""
+        return self.cola.qsize() + len(self._ordenes)
+
+    def _resultado(self, cmd, estado, detalle=None, salida=None):
         identificador = cmd["id"]
         resultado = {
             "id": identificador,
@@ -96,6 +113,7 @@ class GestorHardware:
             "operacion": cmd.get("operacion"),
             "estado": estado,
             "detalle": detalle,
+            "salida": salida,
             "ts": ahora(),
         }
         self.resultados[identificador] = resultado
@@ -103,8 +121,46 @@ class GestorHardware:
         while len(self.resultados) > 256:
             self.resultados.popitem(last=False)
         if estado not in ("EN_COLA", "EJECUTANDO"):
-            self.emitir(p.EV_HARDWARE, {**resultado, "usuario": cmd.get("usuario")})
+            # Primero quien espera (p. ej. el ejecutor): si emitir fallara, no queda colgado.
+            espera = self._esperas.pop(identificador, None)
+            if espera is not None and not espera.done():
+                espera.set_result(resultado)
+            try:
+                self.emitir(p.EV_HARDWARE, {**resultado, "usuario": cmd.get("usuario")})
+            except Exception:  # noqa: BLE001 - el resultado ya quedó en memoria
+                logger.exception("No se pudo emitir el resultado de %s", identificador)
         return resultado
+
+    async def ejecutar_y_esperar(self, componente, comando, argumentos, usuario=None):
+        """Encola una orden y espera su resultado; devuelve la salida del driver.
+
+        Lanza OperacionRechazada con el motivo si no se aplicó.
+        """
+        driver = self.drivers.get(componente)
+        try:
+            plazo = driver.plazo(comando, argumentos) if driver else 5.0
+        except (KeyError, TypeError, ValueError):
+            # Argumentos inválidos: el plazo no importa, encolar los rechaza con motivo.
+            plazo = 5.0
+        cmd = {
+            "id": str(uuid4()),
+            "componente": componente,
+            "operacion": comando,
+            "argumentos": argumentos,
+            "revision": self.revision_aplicada,
+            "vence_en": time.time() + plazo + 1,
+            "usuario": usuario,
+        }
+        espera = asyncio.get_running_loop().create_future()
+        self._esperas[cmd["id"]] = espera
+        try:
+            self.encolar(cmd)
+            resultado = await espera
+        finally:
+            self._esperas.pop(cmd["id"], None)
+        if resultado["estado"] in ("RECHAZADO", "VENCIDO", "CANCELADO", "FALLIDO"):
+            raise OperacionRechazada(f"{componente}.{comando}: {resultado['detalle']}")
+        return resultado["salida"] or {}
 
     def encolar(self, cmd):
         """Entrega inmediata; revalida revisión, plazo y emergencia al ejecutar."""
@@ -127,6 +183,8 @@ class GestorHardware:
             )
             if cmd.get("vence_en", 0) <= time.time():
                 return self._resultado(cmd, "VENCIDO", "La orden llegó fuera de plazo.")
+            if self._pendientes() >= self.cola.maxsize:
+                raise asyncio.QueueFull
             self.cola.put_nowait({**cmd, "generacion": self.generacion})
             return self._resultado(cmd, "EN_COLA")
         except (ValueError, asyncio.QueueFull) as exc:
@@ -178,22 +236,25 @@ class GestorHardware:
         }
 
     async def _leer(self, nombre, driver):
-        escribiendo = self.drivers.get(self.actual["componente"]) if self.actual else None
-        if driver.recurso in self._cuarentena or (
-            escribiendo and escribiendo.recurso == driver.recurso
-        ):
+        escribiendo = {
+            self.drivers[c["componente"]].recurso
+            for c in self._ejecutando.values()
+            if c["componente"] in self.drivers
+        }
+        if driver.recurso in self._cuarentena or driver.recurso in escribiendo:
             return
         try:
             valores, seguro = await self._llamar(driver, lambda: (driver.leer(), driver.seguro()))
             self._guardar_muestra(nombre, valores, seguro)
         except Exception as exc:
+            error = str(exc) or type(exc).__name__
             self.muestras[nombre] = {
                 **self.muestras.get(nombre, {}),
                 "calidad": "ERROR",
-                "error": str(exc) or type(exc).__name__,
+                "error": error,
             }
             if not self.aplicando and not self.emergencia:
-                self.detener()
+                self.detener(f"lectura de {nombre}: {error}")
 
     def todo_seguro(self):
         """Comprueba que todas las muestras confirmen salidas detenidas."""
@@ -222,7 +283,7 @@ class GestorHardware:
         if deseada == self.intentada:
             return
         if (
-            self.actual
+            self._ordenes
             or not self.cola.empty()
             or self._io
             or self.aplicando
@@ -277,63 +338,101 @@ class GestorHardware:
             self.aplicando = False
 
     async def _escribir(self):
+        """Despacha cada orden a su recurso: recursos distintos corren a la vez.
+
+        Las órdenes de un mismo recurso quedan en FIFO (``asyncio.Lock`` despierta a
+        sus esperas en orden de llegada) y se ejecutan de a una.
+        """
         while not self.cerrado:
             cmd = await self.cola.get()
-            self.actual = cmd
             try:
-                if (
-                    self.emergencia
-                    or cmd["generacion"] != self.generacion
-                    or cmd["revision"] != self.revision_aplicada
-                ):
-                    self._resultado(cmd, "CANCELADO", "Orden invalidada por parada/configuración.")
-                    continue
-                if cmd["vence_en"] <= time.time():
-                    self._resultado(cmd, "VENCIDO", "Venció esperando la cola.")
-                    continue
-                driver = self.drivers[cmd["componente"]]
-                validar_operacion(driver.config, cmd["operacion"], cmd.get("argumentos", {}))
-                self._resultado(cmd, "EJECUTANDO")
-
-                def ejecutar(driver=driver, cmd=cmd):
-                    """Aplica una operación previamente validada por el gestor."""
-                    if driver.cancelar.is_set():
-                        raise InterruptedError("Orden cancelada antes de acceder al dispositivo.")
-                    try:
-                        driver.ejecutar(cmd["operacion"], cmd.get("argumentos", {}))
-                    finally:
-                        # Un timeout no mata el hilo. Si regresa tarde, apaga
-                        # bajo el mismo lock antes de liberar el recurso.
-                        if driver.cancelar.is_set():
-                            driver.apagar()
-                    return driver.leer(), driver.seguro()
-
-                timeout = self.timeout_io
-                if cmd["operacion"] == "mover":
-                    # Duración máxima de carrera, acotada a diez minutos por orden.
-                    params = driver.parametros
-                    timeout = min(600, params["carrera_max_mm"] / params["velocidad_mm_s"] + 5)
-                valores, seguro = await self._llamar(driver, ejecutar, timeout)
-                self._guardar_muestra(cmd["componente"], valores, seguro)
-                if cmd["generacion"] != self.generacion:
-                    self._resultado(cmd, "CANCELADO", "Interrumpido por parada.")
-                else:
-                    self._resultado(
-                        cmd, "APLICADO", "Orden aplicada al driver; consulte realimentación."
-                    )
-            except ValueError as exc:
-                self._resultado(cmd, "RECHAZADO", str(exc))
-            except InterruptedError as exc:
-                self._resultado(cmd, "CANCELADO", str(exc))
-            except Exception as exc:
-                self._resultado(cmd, "FALLIDO", str(exc) or type(exc).__name__)
-                self.detener()
+                tarea = asyncio.create_task(self._ejecutar_orden(cmd))
+                self._ordenes[cmd["id"]] = (cmd, tarea)
+                tarea.add_done_callback(lambda _t, i=cmd["id"]: self._ordenes.pop(i, None))
             finally:
-                self.actual = None
                 self.cola.task_done()
 
-    def detener(self):
-        """Enclava emergencia, cancela cola y solicita apagado fuera de ella."""
+    async def _ejecutar_orden(self, cmd):
+        """Ejecuta una orden cuando su recurso queda libre.
+
+        Plazo: ``vence_en`` se revisa al obtener el turno del propio recurso. Como los
+        recursos distintos no se esperan entre sí, el plazo solo cubre la espera
+        detrás de órdenes del mismo recurso (y la del despachador), nunca la de otro.
+        """
+        driver = self.drivers.get(cmd["componente"])
+        recurso = driver.recurso if driver else None
+        turno = self._turnos.setdefault(recurso, asyncio.Lock())
+        try:
+            async with turno:
+                await self._ejecutar_con_turno(cmd)
+        except asyncio.CancelledError:
+            # Solo se cancelan órdenes que esperaban turno (``detener`` ya las
+            # resolvió) o las que quedan al cerrar el servicio.
+            if self.resultados.get(cmd["id"], {}).get("estado") in (None, "EN_COLA", "EJECUTANDO"):
+                self._resultado(cmd, "CANCELADO", "Cancelado por parada.")
+            raise
+
+    async def _ejecutar_con_turno(self, cmd):
+        try:
+            if (
+                self.emergencia
+                or cmd["generacion"] != self.generacion
+                or cmd["revision"] != self.revision_aplicada
+            ):
+                self._resultado(cmd, "CANCELADO", "Orden invalidada por parada/configuración.")
+                return
+            if cmd["vence_en"] <= time.time():
+                self._resultado(cmd, "VENCIDO", "Venció esperando la cola.")
+                return
+            driver = self.drivers[cmd["componente"]]
+            validar_operacion(driver.config, cmd["operacion"], cmd.get("argumentos", {}))
+            self._ejecutando[cmd["id"]] = cmd
+            self._resultado(cmd, "EJECUTANDO")
+
+            def ejecutar(driver=driver, cmd=cmd):
+                """Aplica una operación previamente validada por el gestor."""
+                if driver.cancelar.is_set():
+                    raise InterruptedError("Orden cancelada antes de acceder al dispositivo.")
+                try:
+                    salida = driver.ejecutar(cmd["operacion"], cmd.get("argumentos", {}))
+                finally:
+                    # Un timeout no mata el hilo. Si regresa tarde, apaga
+                    # bajo el mismo lock antes de liberar el recurso.
+                    if driver.cancelar.is_set():
+                        driver.apagar()
+                return salida, driver.leer(), driver.seguro()
+
+            timeout = driver.plazo(cmd["operacion"], cmd.get("argumentos", {}))
+            salida, valores, seguro = await self._llamar(driver, ejecutar, timeout)
+            self._guardar_muestra(cmd["componente"], valores, seguro)
+            if cmd["generacion"] != self.generacion:
+                self._resultado(cmd, "CANCELADO", "Interrumpido por parada.")
+            else:
+                self._resultado(
+                    cmd,
+                    "APLICADO",
+                    "Orden aplicada al driver; consulte realimentación.",
+                    salida,
+                )
+        except ValueError as exc:
+            self._resultado(cmd, "RECHAZADO", str(exc))
+        except InterruptedError as exc:
+            self._resultado(cmd, "CANCELADO", str(exc))
+        except Exception as exc:
+            detalle = str(exc) or type(exc).__name__
+            self._resultado(cmd, "FALLIDO", detalle)
+            self.detener(f"{cmd['componente']}.{cmd['operacion']}: {detalle}")
+        finally:
+            self._ejecutando.pop(cmd["id"], None)
+
+    def detener(self, causa=None):
+        """Enclava emergencia, cancela cola y solicita apagado fuera de ella.
+
+        ``causa`` dice qué falló cuando el gestor se detiene solo; queda en
+        ``causa_parada`` hasta rearmar (conserva la primera).
+        """
+        if not self.emergencia:
+            self.causa_parada = causa
         self.emergencia = True
         self.generacion += 1
         for driver in self.drivers.values():
@@ -342,6 +441,12 @@ class GestorHardware:
             cmd = self.cola.get_nowait()
             self._resultado(cmd, "CANCELADO", "Cancelado por parada.")
             self.cola.task_done()
+        # Las que esperan el turno de su recurso se cancelan ya y sus esperas se
+        # resuelven; las que están tocando un driver terminan por ``cancelar``.
+        for identificador, (cmd, tarea) in list(self._ordenes.items()):
+            if identificador not in self._ejecutando and not tarea.done():
+                self._resultado(cmd, "CANCELADO", "Cancelado por parada.")
+                tarea.cancel()
         if self._parando is None or self._parando.done():
             self._parando = asyncio.create_task(self._apagar_todos())
 
@@ -381,7 +486,7 @@ class GestorHardware:
     def rearmar(self):
         """No rearma recursos inciertos ni operaciones que siguen ejecutándose."""
         if (
-            self.actual
+            self._ordenes
             or self._io
             or self.aplicando
             or self._cuarentena
@@ -392,6 +497,7 @@ class GestorHardware:
         for driver in self.drivers.values():
             driver.cancelar.clear()
         self.emergencia = False
+        self.causa_parada = None
 
     def estado(self):
         """Instantánea de caché: nunca toca pines ni espera lecturas."""
@@ -404,7 +510,7 @@ class GestorHardware:
             componentes[nombre] = {
                 **config,
                 **muestra,
-                "operaciones": CATALOGO.get(config["tipo"], {}).get("operaciones", {}),
+                "operaciones": comandos_de(config["tipo"]),
             }
         return {
             "modo_hal": "gpio",
@@ -416,6 +522,7 @@ class GestorHardware:
             "cola": self.cola.qsize(),
             "capacidad_cola": self.cola.maxsize,
             "ejecutando": self.actual and self.actual["id"],
+            "en_ejecucion": list(self._ejecutando),
             "componentes": componentes,
             "resultados": list(self.resultados.values()),
             "ts": ahora(),
@@ -441,6 +548,9 @@ class GestorHardware:
             await self._parando
             trabajador.cancel()
             await asyncio.gather(trabajador, return_exceptions=True)
+            # Las órdenes en curso terminan solas (``cancelar`` o el timeout de _llamar).
+            ordenes = [tarea for _, tarea in list(self._ordenes.values())]
+            await asyncio.gather(*ordenes, return_exceptions=True)
             # No liberar GPIO mientras un hilo tardío todavía puede usarlos.
             if not self._io and not self._cuarentena:
                 for driver in self.drivers.values():

@@ -92,9 +92,11 @@ class EnsayoDetalleSerializer(EnsayoSerializer):
         return datos
 
     def get_periodo_um(self, registro) -> float | None:
-        """Periodo base del programa: el desplazamiento entre marcas."""
+        """Periodo base del programa o, sin perfil, el espaciado medio de las marcas."""
         periodo = registro.programa.periodo
-        return periodo.periodo_base if periodo else None
+        if periodo:
+            return periodo.periodo_base
+        return registro.red.periodo_medio_um if registro.red else None
 
     def get_procedimiento(self, registro) -> dict | None:
         """Receta con la que se caracterizo la red en el OSA.

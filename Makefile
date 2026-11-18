@@ -7,6 +7,7 @@
 
 COMPOSE     := docker compose
 COMPOSE_DEV := docker compose -f docker-compose.yml -f docker-compose.dev.yml
+COMPOSE_SIM := docker compose -p co2sim -f docker-compose.yml -f docker-compose.sim.yml
 
 .DEFAULT_GOAL := help
 .PHONY: help certs up down restart logs ps build dev shell migrate superuser \
@@ -24,6 +25,9 @@ up: certs  ## Levanta la simulacion arm64 de la Pi 5 (ADR-0005)
 
 dev:  ## Levanta en arquitectura nativa, con recarga en caliente
 	TARGET_PLATFORM=linux/amd64 $(COMPOSE_DEV) up --build
+
+sim: certs  ## Levanta la Pi 5 simulada, con pagina en http://127.0.0.1:8091
+	$(COMPOSE_SIM) up -d --build
 
 down:  ## Detiene los servicios (conserva los volumenes)
 	$(COMPOSE) down

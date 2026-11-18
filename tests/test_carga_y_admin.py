@@ -67,17 +67,17 @@ def test_la_carga_es_idempotente():
 
 
 @pytest.mark.django_db
-def test_el_ejemplo_respeta_el_invariante_de_longitud():
-    """Es la prueba de punta a punta de la cadena derivada.
+def test_el_ejemplo_deriva_la_longitud_de_las_marcas():
+    """Sin perfil de periodo, `Red.longitud` sale de las posiciones de las marcas.
 
-    `Red.longitud` llega al perfil de periodo pasando por la corrida y el
-    programa: el Programa A son 10 mm a 550 um, o sea 18 marcas, que dan 9,9 mm.
+    El Programa A son 18 marcas cada 550 um: 17 x 550 um = 9,35 mm.
     """
     _cargar("--con-ejemplo")
     red = RegistroDeFabricacion.objects.get(codigo="ENS-2026-00001").red
 
     assert red.cantidad_marcas == 18
-    assert red.longitud == pytest.approx(9.9)
+    assert red.longitud == pytest.approx(9.35)
+    assert red.periodo_medio_um == pytest.approx(550.0)
 
 
 @pytest.mark.django_db

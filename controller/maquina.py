@@ -30,7 +30,9 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 
 from controller import protocolo as p
+from controller.ejecutor import Ejecutor
 from controller.hal_base import HalBase
+from controller.programa import resumen, validar_programa
 from controller.simulador import TIEMPO_SHUTTER_S
 
 logger = logging.getLogger("controller.maquina")
@@ -73,31 +75,9 @@ UMBRALES_POR_DEFECTO = [
     },
 ]
 
-# Tope para el criterio MANUAL, que no tiene cantidad de pulsos: el operador lo
-# corta con abortar, pero un programa que no termina nunca no es aceptable.
-MAXIMO_PULSOS_MANUAL = 2000
-
-
-def distancia_de_marca(periodo: dict, n: int) -> float:
-    """Periodo de la marca ``n``, en micrometros.
-
-    Replica ``programas.models.Periodo.calcular_distancia``. Se duplica a
-    proposito porque el controlador no puede importar Django; una prueba
-    verifica que las dos den lo mismo para los tres perfiles.
-
-    Args:
-        periodo: ``{"tipo", "base_um", "incremento_um", "factor"}``.
-        n: Indice de la marca, desde 0.
-
-    Returns:
-        El periodo en um.
-    """
-    base = periodo["base_um"]
-    if periodo.get("tipo") == "LINEAL":
-        return base + (periodo.get("incremento_um") or 0.0) * n
-    if periodo.get("tipo") == "EXPONENCIAL":
-        return base * ((periodo.get("factor") or 1.0) ** n)
-    return base
+# Roles cuyo dato se exige vigente y dentro de umbral para iniciar en GPIO.
+# Regla provisoria: pregunta abierta 1 del spec de programas por pasos.
+ROLES_CRITICOS = ("TEMPERATURA_AGUA", "CAUDAL_REFRIGERANTE", "TENSION_AT")
 
 
 def _ahora_iso() -> str:
@@ -128,6 +108,7 @@ class Maquina:
         self.hal = hal
         self._emitir = emitir
         self.velocidad = velocidad
+        hal.velocidad = velocidad  # el HAL simulado escala sus esperas con el mismo factor
         self.estado = REPOSO
         self.umbrales: list[dict] = list(UMBRALES_POR_DEFECTO)
         self.bloqueado = False
@@ -136,7 +117,7 @@ class Maquina:
         self.hubo_cambio = True  # pide publicar telemetria fuera de turno
         self._excursiones: set[str] = set()
         self._tarea: asyncio.Task | None = None
-        self._abortar = False
+        self._ejecutor: Ejecutor | None = None
 
     # ── Estado ──────────────────────────────────────────────────────────────
 
@@ -202,15 +183,55 @@ class Maquina:
             dt: Tiempo simulado transcurrido desde el ciclo anterior, en s.
         """
         if getattr(self.hal, "modo", None) == "gpio":
-            gestor = self.hal.hardware
-            self._pasar_a(
-                EMERGENCIA if gestor.emergencia else REPOSO if gestor.todo_seguro() else PREPARANDO
-            )
+            if self._corriendo() and self.hal.hardware.emergencia:
+                # El gestor se detuvo solo (falla de una orden o de una lectura): el
+                # programa no sigue, aunque esté en una espera sin hardware.
+                self._interrumpir_gpio(self._motivo_parada_gestor())
+            self._actualizar_estado_gpio()
             return
         self.hal.avanzar(dt)
         self._actualizar_estado()
         if self.hal.alta_tension:
             self._evaluar_umbrales()
+
+    def _corriendo(self) -> bool:
+        return self._tarea is not None and not self._tarea.done()
+
+    def _actualizar_estado_gpio(self) -> None:
+        gestor = self.hal.hardware
+        if gestor.emergencia:
+            self._pasar_a(EMERGENCIA)
+        elif self._corriendo():
+            self._pasar_a(GRABANDO)
+        else:
+            self._pasar_a(REPOSO if gestor.todo_seguro() else PREPARANDO)
+
+    def _motivo_parada_gestor(self) -> str:
+        """Motivo de una parada que el gestor decidió solo, con lo que falló."""
+        causa = self.hal.hardware.causa_parada
+        motivo = "Hardware detenido durante el programa"
+        return f"{motivo}: {causa}" if causa else f"{motivo}."
+
+    def _interrumpir_gpio(self, motivo: str) -> None:
+        """Emergencia en GPIO: cancela el programa al instante y cierra el registro.
+
+        El gestor ya cortó las salidas (``detener``). En GPIO no se emite el evento
+        ``emergencia``, que acreditaría un tiempo de respuesta que no se midió;
+        el registro se cierra con ``abortado``.
+        """
+        ejecutor, ejecucion = self._ejecutor, self.ejecucion
+        if not self._corriendo() or ejecutor is None or ejecucion is None:
+            return
+        self._tarea.cancel()
+        self.ejecucion = None
+        self._ejecutor = None
+        self._emitir(
+            p.EV_ABORTADO,
+            {"registro": ejecucion["registro"], "marcas": len(ejecutor.marcas), "motivo": motivo},
+        )
+        self._avisar(
+            f"Programa abortado después de {len(ejecutor.marcas)} marcas: {motivo}", "warn"
+        )
 
     def _evaluar_umbrales(self) -> None:
         lect = self.hal.lecturas()
@@ -250,17 +271,22 @@ class Maquina:
             comando: ``{"accion": ..., ...}`` tal como llega por el stream.
         """
         accion = comando.get("accion")
-        if getattr(self.hal, "modo", None) == "gpio":
+        if getattr(self.hal, "modo", None) == "gpio" and accion not in (p.INICIAR, p.ABORTAR):
             gestor = self.hal.hardware
             try:
-                if accion == p.COMPONENTE:
+                if accion in (p.EMERGENCIA, p.APAGAR):
+                    gestor.detener()
+                    self._interrumpir_gpio(
+                        comando.get("motivo") or "Parada de emergencia durante el programa."
+                    )
+                    self._pasar_a(EMERGENCIA)
+                    self._avisar("Parada solicitada. Esperando apagado de los componentes.", "warn")
+                elif self._corriendo() and accion in (p.COMPONENTE, p.REARMAR):
+                    raise ValueError("Hay un programa en ejecución: abórtelo antes de operar.")
+                elif accion == p.COMPONENTE:
                     resultado = gestor.encolar(comando)
                     detalle = resultado.get("detalle") or comando["componente"]
                     self._avisar(f"{resultado['estado']}: {detalle}")
-                elif accion in (p.EMERGENCIA, p.APAGAR):
-                    gestor.detener()
-                    self._pasar_a(EMERGENCIA)
-                    self._avisar("Parada solicitada. Esperando apagado de los componentes.", "warn")
                 elif accion == p.REARMAR:
                     gestor.rearmar()
                     self._pasar_a(REPOSO)
@@ -268,8 +294,7 @@ class Maquina:
                     gestor.intentada = None
                 else:
                     raise ValueError(
-                        "Modo GPIO manual: opere por componente. "
-                        "El grabado automático requiere configurar sus enlaces e interlocks."
+                        "Modo GPIO: opere por componente o inicie un programa por pasos."
                     )
             except ValueError as exc:
                 self._avisar(str(exc), "error")
@@ -451,34 +476,167 @@ class Maquina:
     # ── Programa ────────────────────────────────────────────────────────────
 
     def _iniciar(self, cmd: dict) -> None:
-        if self.estado != LISTO:
+        """Arranca un programa de forma atomica: o corre su tarea, o no queda nada.
+
+        Si algo falla despues de los controles (al preparar la ejecucion), se
+        deshace lo hecho y se rechaza; ``manejar`` emite entonces ``abortado``.
+        """
+        gpio = getattr(self.hal, "modo", None) == "gpio"
+        if self._corriendo():
+            raise ComandoRechazadoError("ya hay un programa en ejecucion.")
+        if gpio:
+            if self.hal.hardware.emergencia:
+                raise ComandoRechazadoError("el hardware esta en emergencia: rearme primero.")
+        elif self.estado != LISTO:
             raise ComandoRechazadoError("el programa solo arranca con el sistema LISTO.")
-        if not self.hal.laser:
-            raise ComandoRechazadoError("encienda el laser y cierre el lazo antes de iniciar.")
         if self.bloqueado:
             raise ComandoRechazadoError("hay un umbral que bloquea los comandos.")
+        estado_previo = self.estado
+        try:
+            self._arrancar(cmd, gpio)
+        except ComandoRechazadoError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - se deshace y se informa al registro
+            logger.exception("No se pudo iniciar el programa")
+            if self._tarea is not None and not self._tarea.done():
+                self._tarea.cancel()
+            self.ejecucion = None
+            self._ejecutor = None
+            self.estado = estado_previo
+            self.hubo_cambio = True
+            raise ComandoRechazadoError(f"no se pudo iniciar: {exc}") from exc
+
+    def _arrancar(self, cmd: dict, gpio: bool) -> None:
         programa = cmd["programa"]
-        self._abortar = False
+        inventario = self.hal.inventario()
+        try:
+            pasos = validar_programa(programa.get("pasos"), inventario)
+        except ValueError as exc:
+            raise ComandoRechazadoError(str(exc)) from exc
+        aviso = self._exigir_roles_criticos(inventario) if gpio else None
+        modo = cmd.get("modo", "REAL")
+        registro = cmd["registro"]
+        inhibidos = {
+            nombre
+            for nombre, comp in inventario.get("componentes", {}).items()
+            if comp.get("inhibir_en_prueba")
+        }
+        ejecutor = Ejecutor(
+            self.hal,
+            self._emitir_de_ejecucion(registro, resumen(pasos, inventario)["pulsos"]),
+            self._avisar,
+            registro=registro,
+            modo=modo,
+            inhibidos=inhibidos,
+        )
+        ejecutor.al_cambiar = self._marcar_cambio
+        self._ejecutor = ejecutor
         self.ejecucion = {
-            "registro": cmd["registro"],
+            "registro": registro,
             "programa": programa.get("nombre", programa.get("codigo")),
-            "modo": cmd.get("modo", "REAL"),
-            "pulso": 0,
-            "pulsos": programa["pulsos"] or 0,
-            # Tiempo que el shutter queda abierto en cada marca (tiempo de pulso).
-            "duracion_pulso_ms": programa["duracion_pulso_ms"],
-            "progreso": 0.0,
-            "distancia_mm": 0.0,
+            "modo": modo,
         }
         self._pasar_a(GRABANDO)
-        self._avisar(f"Grabando {self.ejecucion['programa']} ({cmd['registro']}).")
-        self._tarea = asyncio.create_task(self._ejecutar(cmd))
+        self._checkpoint(registro, "TIEMPO")
+        self._tarea = asyncio.create_task(self._correr_programa(ejecutor, pasos))
+        grabando = f"Grabando {self.ejecucion['programa']} ({registro})."
+        # Un solo ``mensaje``: el aviso de arranque va junto, para que no se pierda.
+        if aviso:
+            self._avisar(f"{grabando} {aviso}", "warn")
+        else:
+            self._avisar(grabando)
+
+    def _exigir_roles_criticos(self, inventario: dict) -> str:
+        """En GPIO: dato vigente y dentro de umbral en cada rol critico asignado.
+
+        Un rol sin asignar no impide arrancar, pero se avisa. Siempre se avisa que
+        en GPIO los umbrales no se vigilan durante la corrida. Regla provisoria
+        (preguntas abiertas 1 y 5 del spec).
+
+        Returns:
+            El aviso para el operador; quien llama lo publica junto al «Grabando…».
+        """
+        asignados = {
+            comp.get("rol")
+            for comp in inventario.get("componentes", {}).values()
+            if comp.get("estado") == "Vigente"
+        }
+        variables = self.hal.lecturas()
+        sin_asignar = []
+        for rol in ROLES_CRITICOS:
+            if rol not in asignados:
+                sin_asignar.append(rol)
+                continue
+            valor = variables.get(rol)
+            if valor is None:
+                raise ComandoRechazadoError(f"{rol} no tiene un dato vigente.")
+            for u in self.umbrales:
+                if u["variable"] == rol and not u["valor_min"] <= valor <= u["valor_max"]:
+                    rango = f"[{u['valor_min']}, {u['valor_max']}]"
+                    raise ComandoRechazadoError(f"{rol} = {valor} fuera de {rango}.")
+        aviso = (
+            "En GPIO las lecturas críticas solo se verifican al iniciar; "
+            "durante el programa no se vigilan umbrales."
+        )
+        if sin_asignar:
+            aviso = f"Sin rol asignado para {', '.join(sin_asignar)}: no se verificaron. {aviso}"
+        return aviso
+
+    def _marcar_cambio(self) -> None:
+        self.hubo_cambio = True
+
+    def _emitir_de_ejecucion(self, registro: str, pulsos: int) -> Callable[[str, dict], None]:
+        """Reenvia los eventos del ejecutor y asienta un checkpoint cada cuarto de marcas."""
+        cada = max(1, pulsos // 4)
+
+        def emitir(tipo: str, datos: dict) -> None:
+            self._emitir(tipo, datos)
+            if tipo == p.EV_MARCA and datos["numero"] % cada == 0:
+                self._checkpoint(registro, "MARCA")
+
+        return emitir
+
+    async def _correr_programa(self, ejecutor: Ejecutor, pasos: list) -> None:
+        """Corre el ejecutor y libera la ejecucion al terminar, de cualquier forma.
+
+        El ejecutor ya hizo la parada segura y emitio ``fin`` o ``abortado``; si
+        lo cancelo una emergencia, quien cancelo ya detuvo el hardware.
+        """
+        try:
+            await ejecutor.correr(pasos)
+        finally:
+            if self._ejecutor is ejecutor:
+                self.ejecucion = None
+                self._ejecutor = None
+                self.hubo_cambio = True
+                if self.estado == GRABANDO:
+                    if getattr(self.hal, "modo", None) == "gpio":
+                        self._actualizar_estado_gpio()
+                    else:
+                        self._fin_simulado(len(ejecutor.marcas))
+
+    def _fin_simulado(self, marcas: int) -> None:
+        """Vuelve a evaluar el estado sin perder el mensaje del fin.
+
+        El fin normal desarma el shutter: se pierde LISTO y el enclavamiento apaga el
+        láser. Su aviso no pisa «Programa terminado…»: va en el mismo mensaje. (Tras un
+        aborto el láser ya está apagado y esto no aplica.)
+        """
+        laser = self.hal.laser
+        self.estado = LISTO
+        self._actualizar_estado()
+        if laser and not self.hal.laser:
+            self._avisar(
+                f"Programa terminado: {marcas} marcas · shutter desarmado: "
+                "el enclavamiento apagó el láser.",
+                "warn",
+            )
 
     def _pedir_aborto(self, _cmd: dict) -> None:
-        if self.estado != GRABANDO:
+        if self._ejecutor is None or not self._corriendo():
             raise ComandoRechazadoError("no hay un programa en ejecucion.")
-        self._abortar = True
-        self._avisar("Abortando el programa al terminar el pulso en curso...", "warn")
+        self._ejecutor.abortar()
+        self._avisar("Abortando el programa al terminar la accion en curso...", "warn")
 
     def _apagar(self, _cmd: dict) -> None:
         self._exigir_no(GRABANDO, EMERGENCIA)
@@ -490,98 +648,6 @@ class Maquina:
         self.hal.desalinear()
         self.hal.refrigeracion = False
         self._avisar("Equipo apagado en orden inverso.")
-
-    async def _dormir(self, segundos_simulados: float) -> None:
-        await asyncio.sleep(segundos_simulados / self.velocidad)
-
-    async def _esperar_motor(self) -> None:
-        while not self.hal.motor_en_destino:
-            await self._dormir(0.01)
-
-    async def _ejecutar(self, cmd: dict) -> None:
-        """Ejecuta el loop de grabado: pulso, marca, desplazamiento.
-
-        Una emergencia cancela esta tarea desde ``_parada``; en ese caso no se
-        emite ``fin``: el registro queda interrumpido por el evento de emergencia.
-        """
-        prog = cmd["programa"]
-        registro = cmd["registro"]
-        real = cmd.get("modo", "REAL") == "REAL"
-        total = prog["pulsos"] or MAXIMO_PULSOS_MANUAL
-        t_pulso = prog["duracion_pulso_ms"] / 1000
-        objetivo = prog["potencia_objetivo_mw"]
-        self.hal.potencia_objetivo_mw = objetivo
-        cada = max(1, total // 4)
-        acumulado_um = 0.0
-        eficiencias = []
-
-        # Cada red arranca en el origen del eje, y no se marca nada hasta que el
-        # desplazador llego: empezar antes correria todas las marcas.
-        await self._dormir(self.hal.mover_a(0.0))
-        await self._esperar_motor()
-        self._checkpoint(registro, "TIEMPO")
-        for n in range(total):
-            if self._abortar:
-                break
-            # Pulso: en PRUEBA se recorre el programa con el laser inhibido.
-            if real:
-                self.hal.shutter_abierto = True
-                # Publicar la apertura permite ver cada pulso, aun si dura menos
-                # que el intervalo periodico de telemetria.
-                self.hubo_cambio = True
-            await self._dormir(t_pulso)
-            if real and objetivo > 0:
-                eficiencias.append(self.hal.potencia_optica_mw / objetivo)
-            self.hal.shutter_abierto = False
-
-            acumulado_um += distancia_de_marca(prog["periodo"], n)
-            # Posicion absoluta desde el origen, no relativa a donde quedo el
-            # motor: un error de posicionamiento no se arrastra a las marcas
-            # siguientes.
-            t_mov = self.hal.mover_a(acumulado_um / 1000)
-            if real:
-                self._emitir(
-                    p.EV_MARCA,
-                    {
-                        "registro": registro,
-                        "numero": n + 1,
-                        "posicion_um": round(acumulado_um, 3),
-                        "cant_pulsos": 1,
-                        "ciclo_trabajo": round(100 * t_pulso / (t_pulso + t_mov), 1),
-                        "tiempo_de_pulso": prog["duracion_pulso_ms"],
-                    },
-                )
-            self.ejecucion.update(
-                pulso=n + 1,
-                progreso=round((n + 1) / total, 4) if prog["pulsos"] else 0.0,
-                distancia_mm=round(acumulado_um / 1000, 3),
-                periodo_s=round(t_pulso + t_mov, 3),
-            )
-            self.hubo_cambio = True
-            if (n + 1) % cada == 0:
-                self._checkpoint(registro, "MARCA")
-            await self._dormir(t_mov)
-            await self._esperar_motor()
-
-        self.hal.potencia_objetivo_mw = 0.0
-        marcas = self.ejecucion["pulso"]
-        self.ejecucion = None
-        self._pasar_a(LISTO)
-        if self._abortar:
-            self._emitir(
-                p.EV_ABORTADO,
-                {"registro": registro, "marcas": marcas, "motivo": "Abortado por el operador."},
-            )
-            self._avisar(f"Programa abortado despues de {marcas} marcas.", "warn")
-            return
-
-        datos_fin = {"registro": registro, "marcas": marcas, "espectro": None}
-        if real and marcas:
-            eficiencia = sum(eficiencias) / len(eficiencias) if eficiencias else 1.0
-            lambdas, dbs = self.hal.espectro(prog["periodo"]["base_um"], marcas, eficiencia)
-            datos_fin["espectro"] = {"longitudes_onda": lambdas, "transmitancias": dbs}
-        self._emitir(p.EV_FIN, datos_fin)
-        self._avisar(f"Programa terminado: {marcas} marcas. Espectro medido.")
 
     def _checkpoint(self, registro: str, tipo: str) -> None:
         self._emitir(
@@ -596,6 +662,12 @@ class Maquina:
 
     # ── Telemetria ──────────────────────────────────────────────────────────
 
+    def _ejecucion_publicada(self) -> dict | None:
+        """Registro, programa y modo junto con el progreso del ejecutor."""
+        if self.ejecucion is None or self._ejecutor is None:
+            return None
+        return {**self.ejecucion, **self._ejecutor.progreso}
+
     def telemetria(self, hz: float) -> dict:
         """Arma el mensaje de telemetria que se publica al front (ADR-0007).
 
@@ -607,32 +679,27 @@ class Maquina:
         """
         hal = self.hal
         if getattr(hal, "modo", None) == "gpio":
+            roles = hal.roles()
             return {
                 "ts": _ahora_iso(),
                 "modo_hal": "gpio",
                 "estado": self.estado,
                 "condiciones": self.condiciones(),
-                "variables": hal.lecturas(),
-                "senales": hal.senales(),
-                "actuadores": {},
+                "variables": roles["variables"],
+                "senales": roles["senales"],
+                "actuadores": roles["actuadores"],
                 "extra": {
                     "potencia_optica_mw": None,
-                    "sensor_sombra_mw": None,
-                    "temperatura_laser": None,
+                    **roles["extra"],
                     "frecuencia_hz": None,
                 },
-                "ejecucion": None,
+                "ejecucion": self._ejecucion_publicada(),
                 "falla": "ninguna",
                 "bloqueado": self.bloqueado,
                 "mensaje": self.mensaje,
                 "hz": hz,
                 "hardware": hal.hardware.estado(),
             }
-        en_curso = self.ejecucion
-        frecuencia = 0.0
-        if en_curso and en_curso.get("periodo_s"):
-            # Pulsos por segundo: un ciclo es el pulso mas el desplazamiento.
-            frecuencia = round(1 / en_curso["periodo_s"], 2)
         return {
             "ts": _ahora_iso(),
             "modo_hal": "simulado",
@@ -653,9 +720,9 @@ class Maquina:
                 "potencia_optica_mw": round(hal.potencia_optica_mw, 3),
                 "sensor_sombra_mw": round(hal.sensor_sombra_mw, 3),
                 "temperatura_laser": round(hal.temp_laser, 2),
-                "frecuencia_hz": frecuencia,
+                "frecuencia_hz": None,
             },
-            "ejecucion": dict(en_curso) if en_curso else None,
+            "ejecucion": self._ejecucion_publicada(),
             "falla": hal.falla,
             "bloqueado": self.bloqueado,
             "mensaje": self.mensaje,

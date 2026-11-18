@@ -116,3 +116,49 @@ def registro(db, programa, red, configuracion, usuario):
     )
     r.operadores.add(usuario)
     return r
+
+
+def arbol_de_ejemplo():
+    """Devuelve un arbol valido contra el inventario simulado: armar y 3 pulsos con avance."""
+    return [
+        {"tipo": "ACCION", "componente": "shutter", "comando": "armar", "argumentos": {}},
+        {
+            "tipo": "BUCLE",
+            "repeticiones": 3,
+            "pasos": [
+                {
+                    "tipo": "PARALELO",
+                    "pasos": [
+                        {
+                            "tipo": "ACCION",
+                            "componente": "shutter",
+                            "comando": "pulso",
+                            "argumentos": {"duracion_ms": 400},
+                        },
+                        {
+                            "tipo": "ACCION",
+                            "componente": "motor_x",
+                            "comando": "mover",
+                            "argumentos": {"delta": 0.55, "velocidad": 1},
+                        },
+                    ],
+                },
+                {"tipo": "ESPERA", "duracion_ms": 50},
+            ],
+        },
+    ]
+
+
+@pytest.fixture
+def programa_arbol(db, usuario):
+    """Devuelve un programa guardado como arbol de pasos, ya validado."""
+    from types import SimpleNamespace
+
+    from programas.serializers import ProgramaSerializer
+
+    serializador = ProgramaSerializer(
+        data={"nombre": "Helicoidal de prueba", "pasos": arbol_de_ejemplo()},
+        context={"request": SimpleNamespace(user=usuario)},
+    )
+    serializador.is_valid(raise_exception=True)
+    return serializador.save()

@@ -176,10 +176,10 @@ PASOS_ESTANDAR: list[dict] = [
                 ],
             },
             {
-                "nombre": "Criterio de fin",
+                "nombre": "Resumen del programa",
                 "estados": [
                     estado(
-                        "{programa.distancia_mm:2} mm · {programa.pulsos} pulsos",
+                        "{programa.pulsos} pulsos · {programa.duracion_min_s:1} s mínimo",
                         "info",
                         si("programa.seleccionado"),
                     ),
@@ -197,12 +197,8 @@ PASOS_ESTANDAR: list[dict] = [
             ),
             manual(
                 "Parámetros dentro de umbrales de seguridad",
-                "Verificar potencia objetivo, duración de pulso y desplazamiento por pulso.",
-            ),
-            sensor(
-                "Criterio de finalización definido",
-                "Definir el criterio de finalización (distancia total o cantidad de pulsos).",
-                si("programa.tiene_criterio_fin"),
+                "Revisar en el resumen del programa la cantidad de pulsos, el recorrido y la "
+                "duración mínima.",
             ),
         ],
     },
@@ -210,16 +206,15 @@ PASOS_ESTANDAR: list[dict] = [
         "titulo": "Fuente de alta tensión",
         "subtitulo": "Energización de la fuente HV",
         "fase": "Verificación",
-        "acciones": [boton("habilitar_at", "Habilitar alta tensión")],
         "indicadores": [
             {"nombre": "Interlock HV", "estados": [estado("VERIFICAR", "info")]},
             {
-                "nombre": "Fuente HV (SW)",
+                "nombre": "Fuente HV",
                 "estados": [
                     estado(
                         "HABILITADA {variables.TENSION_AT:1} kV",
                         "ok",
-                        si("condiciones.AT_ENCENDIDA"),
+                        cmp("variables.TENSION_AT", ">=", 15),
                     ),
                     estado(
                         "RAMPA {variables.TENSION_AT:1} kV",
@@ -230,16 +225,17 @@ PASOS_ESTANDAR: list[dict] = [
                 ],
             },
         ],
-        "condicion_avance": si("condiciones.AT_ENCENDIDA"),
+        "condicion_avance": cmp("variables.TENSION_AT", ">=", 15),
         "validaciones": [
             manual(
                 "Interlock físico cerrado",
                 "Habilitar el interlock físico de la fuente de alta tensión.",
             ),
             sensor(
-                "Fuente HV habilitada por software",
-                "Confirmar el encendido desde software con «Habilitar alta tensión».",
-                si("condiciones.AT_ENCENDIDA"),
+                "Fuente HV habilitada",
+                "Habilitar la fuente con el botón físico del laboratorio y esperar a que la "
+                "tensión llegue a 15 kV.",
+                cmp("variables.TENSION_AT", ">=", 15),
             ),
             manual(
                 "Semáforo en amarillo intermitente",
@@ -411,7 +407,7 @@ PASOS_ESTANDAR: list[dict] = [
                 "nombre": "Progreso",
                 "estados": [
                     estado(
-                        "{ejecucion.pulso} / {ejecucion.pulsos} pulsos",
+                        "{ejecucion.pulsos} / {programa.pulsos} pulsos",
                         "info",
                         si("ejecucion.activa"),
                     ),
@@ -428,15 +424,15 @@ PASOS_ESTANDAR: list[dict] = [
             ),
             sensor(
                 "Primer pulso ejecutado correctamente",
-                "Con «Iniciar grabado» arranca el loop: en cada pulso el shutter abre durante "
-                "la duración configurada (p. ej. 400 ms) y la fibra se desplaza la distancia "
-                "configurada (p. ej. 550 µm).",
-                alguna(cmp("ejecucion.pulso", ">=", 1), si("ensayo.terminado")),
+                "Con «Iniciar grabado» arranca el programa: cada pulso abre el shutter la "
+                "duración de su paso (p. ej. 400 ms) y cada «mover» desplaza la fibra lo que "
+                "indique (p. ej. 0,55 mm).",
+                alguna(cmp("ejecucion.pulsos", ">=", 1), si("ensayo.terminado")),
             ),
             sensor(
-                "Criterio de finalización alcanzado",
-                "El loop se repite hasta cumplir el criterio de finalización (distancia total "
-                "o pulsos). Para cortarlo antes, usar «Abortar».",
+                "Programa completado",
+                "El programa termina al ejecutar todos sus pasos, con cada bucle repetido las "
+                "veces indicadas. Para cortarlo antes, usar «Abortar».",
                 si("ensayo.completado"),
             ),
         ],

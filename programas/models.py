@@ -13,7 +13,7 @@ from django.core.exceptions import ValidationError
 from django.core.validators import MinValueValidator
 from django.db import models
 
-from comun.enums import CriterioFin, TipoPeriodo, TipoRed
+from comun.enums import CriterioFin, TipoPaso, TipoPeriodo, TipoRed
 
 
 class Periodo(models.Model):
@@ -116,8 +116,10 @@ class Programa(models.Model):
     descripcion = models.TextField("descripcion", blank=True)
     version = models.PositiveIntegerField("version", default=1)
     tipo_red = models.CharField("tipo de red", max_length=10, choices=TipoRed.choices)
-    potencia_objetivo = models.FloatField("potencia objetivo [W]")
-    criterio_fin = models.CharField("criterio de fin", max_length=25, choices=CriterioFin.choices)
+    potencia_objetivo = models.FloatField("potencia objetivo [W]", null=True, blank=True)
+    criterio_fin = models.CharField(
+        "criterio de fin", max_length=25, choices=CriterioFin.choices, null=True, blank=True
+    )
     valor_criterio_fin = models.FloatField("valor del criterio de fin", null=True, blank=True)
     periodo = models.OneToOneField(
         Periodo,
@@ -205,23 +207,40 @@ class Programa(models.Model):
 
 
 class Paso(models.Model):
-    """Instruccion individual de un programa.
+    """Nodo del arbol de pasos de un programa.
 
-    ``etiqueta`` es el codigo G y ``parametro`` su argumento, tal como lo deja
-    asentado la nota del Diagrama de Clases.
+    Un programa nuevo es un arbol: ``ACCION`` (componente, comando y argumentos),
+    ``ESPERA`` (``tiempo_de_pulso`` guarda su ``duracion_ms``), ``BUCLE``
+    (``repeticiones``) y ``PARALELO``. Los bloques tienen hijos (``padre``).
+    ``etiqueta`` y ``parametro`` son los del modelo viejo (codigo G): los
+    programas anteriores quedan legibles pero sin validar.
     """
 
     programa = models.ForeignKey(
         Programa, verbose_name="programa", on_delete=models.CASCADE, related_name="pasos"
     )
+    padre = models.ForeignKey(
+        "self",
+        verbose_name="bloque contenedor",
+        on_delete=models.CASCADE,
+        related_name="hijos",
+        null=True,
+        blank=True,
+    )
     orden = models.PositiveIntegerField("orden")
-    etiqueta = models.CharField("etiqueta (codigo G)", max_length=20)
+    tipo = models.CharField(
+        "tipo", max_length=10, choices=TipoPaso.choices, default=TipoPaso.ACCION
+    )
+    componente = models.CharField("componente", max_length=100, blank=True)
+    comando = models.CharField("comando", max_length=40, blank=True)
+    argumentos = models.JSONField("argumentos", default=dict, blank=True)
+    etiqueta = models.CharField("etiqueta (codigo G)", max_length=20, blank=True)
     parametro = models.FloatField("parametro", null=True, blank=True)
     repeticiones = models.PositiveIntegerField("repeticiones", default=1)
     tiempo_de_pulso = models.PositiveIntegerField(
         "tiempo de pulso [ms]",
         default=0,
-        help_text="Cero para instrucciones que no disparan el laser.",
+        help_text="Duracion de una ESPERA; cero para el resto.",
     )
 
     class Meta:
@@ -229,17 +248,30 @@ class Paso(models.Model):
 
         verbose_name = "paso"
         verbose_name_plural = "pasos"
-        # La composicion del diagrama es {ordered}: un programa es una secuencia,
-        # no un conjunto. El orden es parte del dato, no una preferencia de
-        # presentacion.
+        # El orden es parte del dato: un programa es una secuencia, no un conjunto.
         ordering = ["programa", "orden"]
         constraints = [
-            models.UniqueConstraint(fields=["programa", "orden"], name="paso_programa_orden_unico")
+            models.UniqueConstraint(
+                fields=["programa", "padre", "orden"], name="paso_programa_padre_orden_unico"
+            ),
         ]
 
+    def clean(self) -> None:
+        """Valida que no haya otro paso con el mismo orden entre sus hermanos.
+
+        La restriccion de base no alcanza para los pasos raiz (``padre`` nulo): en
+        SQL los NULL no chocan entre si, y MySQL no admite indices parciales.
+
+        Raises:
+            ValidationError: Si ya hay un hermano con ese orden.
+        """
+        hermanos = Paso.objects.filter(programa_id=self.programa_id, padre_id=self.padre_id)
+        if hermanos.exclude(pk=self.pk).filter(orden=self.orden).exists():
+            raise ValidationError({"orden": "Ya hay un paso con ese orden en el mismo nivel."})
+
     def __str__(self) -> str:
-        """Devuelve el orden y la etiqueta del paso."""
-        return f"{self.orden}. {self.etiqueta}"
+        """Devuelve el orden y el tipo (o la etiqueta) del paso."""
+        return f"{self.orden}. {self.etiqueta or self.tipo}"
 
     def duracion_estimada(self) -> int:
         """Estima la duracion del paso.

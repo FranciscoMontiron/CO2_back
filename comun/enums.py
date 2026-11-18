@@ -80,6 +80,15 @@ class TipoCheckpoint(models.TextChoices):
     MARCA = "MARCA", "Por marca"
 
 
+class TipoPaso(models.TextChoices):
+    """Clase de nodo del arbol de pasos de un programa."""
+
+    ACCION = "ACCION", "Acción"
+    ESPERA = "ESPERA", "Espera"
+    BUCLE = "BUCLE", "Bucle"
+    PARALELO = "PARALELO", "En paralelo"
+
+
 class TipoPeriodo(models.TextChoices):
     """Perfil de variacion del periodo a lo largo de la red.
 

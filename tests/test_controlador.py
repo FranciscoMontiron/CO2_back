@@ -19,7 +19,6 @@ from controller.maquina import (
     PREPARANDO,
     REPOSO,
     Maquina,
-    distancia_de_marca,
 )
 from controller.simulador import DELTA_N_PRINCIPAL, HalSimulado
 
@@ -44,9 +43,10 @@ async def test_el_bus_publica_la_apertura_de_cada_pulso_corto(monkeypatch):
             for _, mensaje in redis.publicados
             if json.loads(mensaje)["actuadores"]["shutter_abierto"]
         ]
-        assert {mensaje["ejecucion"]["pulso"] for mensaje in abiertos} == {0, 1}
-        # El dashboard muestra el tiempo de pulso del programa en ejecucion.
-        assert {mensaje["ejecucion"]["duracion_pulso_ms"] for mensaje in abiertos} == {100}
+        assert {mensaje["ejecucion"]["pulsos"] for mensaje in abiertos} == {0, 1}
+        # El dashboard muestra la duracion real del ultimo pulso del programa.
+        # Durante el primer pulso todavia no hay uno terminado; durante el segundo, 100.
+        assert {mensaje["ejecucion"]["ultimo_pulso_ms"] for mensaje in abiertos} == {None, 100}
         assert json.loads(redis.publicados[-1][1])["actuadores"]["shutter_abierto"] is False
     finally:
         parar.set()
@@ -216,22 +216,46 @@ async def _esperar(predicado, tope=5.0):
             raise AssertionError("tiempo agotado")
 
 
-def _programa(pulsos=3, modo="REAL", periodo=None):
+def _accion(componente, comando, **argumentos):
+    return {
+        "tipo": "ACCION",
+        "componente": componente,
+        "comando": comando,
+        "argumentos": argumentos,
+    }
+
+
+def _pulso():
+    return _accion("shutter", "pulso", duracion_ms=100)
+
+
+def _mover(delta_mm):
+    return _accion("motor_x", "mover", delta=delta_mm, velocidad=5)
+
+
+def _iniciar(pasos, modo="REAL"):
     return {
         "accion": p.INICIAR,
         "registro": "ENS-TEST-1",
         "modo": modo,
-        "programa": {
-            "codigo": "PRG-T",
-            "nombre": "Prueba",
-            "potencia_objetivo_mw": 10.0,
-            "duracion_pulso_ms": 100,
-            "pulsos": pulsos,
-            "criterio_fin": "CANT_MARCAS",
-            "periodo": periodo
-            or {"tipo": "CONSTANTE", "base_um": 550.0, "incremento_um": None, "factor": None},
-        },
+        "programa": {"codigo": "PRG-T", "nombre": "Prueba", "pasos": pasos},
     }
+
+
+def _programa(pulsos=3, modo="REAL"):
+    """Bucle x N de {pulso de 100 ms, avance de 550 um}, con el eje en 550 um."""
+    return _iniciar(
+        [
+            _accion("motor_x", "referenciar", posicion=0.55),
+            {"tipo": "BUCLE", "repeticiones": pulsos, "pasos": [_pulso(), _mover(0.55)]},
+        ],
+        modo,
+    )
+
+
+def _pulsos_hechos(m):
+    ejecucion = m.telemetria(1.0)["ejecucion"]
+    return ejecucion["pulsos"] if ejecucion else 0
 
 
 @pytest.mark.asyncio
@@ -284,7 +308,12 @@ async def test_un_programa_completo_emite_marcas_checkpoints_y_fin():
     async with _Reloj(m):
         await m.manejar(_programa(pulsos=4))
         assert m.estado == GRABANDO
-        await _esperar(lambda: m.estado == LISTO)
+        await _esperar(lambda: m.ejecucion is None)
+        # El fin normal cierra y desarma el shutter: se pierde LISTO (y el láser se apaga
+        # por el enclavamiento del simulador).
+        assert m.hal.shutter_armado is False
+        assert m.hal.shutter_abierto is False
+        assert m.estado == PREPARANDO
 
     marcas = _tipos(eventos, p.EV_MARCA)
     assert [mk["numero"] for mk in marcas] == [1, 2, 3, 4]
@@ -297,26 +326,34 @@ async def test_un_programa_completo_emite_marcas_checkpoints_y_fin():
 
 @pytest.mark.asyncio
 async def test_cada_red_arranca_en_el_origen_del_eje():
-    """El desplazador vuelve a 0 antes de la primera marca."""
+    """El programa lleva el desplazador a 0 antes de la primera marca."""
     m, eventos = _maquina()
     await _armar(m)
-    m.hal.mover_a(5.0)
-    m.tick(5)
     async with _Reloj(m):
-        await m.manejar(_programa(pulsos=1))
-        await _esperar(lambda: m.estado == LISTO)
+        await m.hal.operar("motor_x", "referenciar", {"posicion": 0.0})
+        await m.hal.operar("motor_x", "mover_a", {"posicion": 5.0, "velocidad": 5})
+        pasos = [_accion("motor_x", "mover_a", posicion=0.0, velocidad=5), _pulso(), _mover(0.55)]
+        await m.manejar(_iniciar(pasos))
+        await _esperar(lambda: m.ejecucion is None)
     assert m.hal.posicion_mm == pytest.approx(0.55)
 
 
 @pytest.mark.asyncio
 async def test_el_perfil_lineal_espacia_las_marcas_creciendo():
-    """El periodo de cada marca sale del perfil del programa."""
+    """El periodo de cada marca sale de los avances que escribe el programa."""
     m, eventos = _maquina()
     await _armar(m)
-    periodo = {"tipo": "LINEAL", "base_um": 500.0, "incremento_um": 10.0, "factor": None}
+    pasos = [
+        _accion("motor_x", "referenciar", posicion=0.5),
+        _pulso(),
+        _mover(0.51),
+        _pulso(),
+        _mover(0.52),
+        _pulso(),
+    ]
     async with _Reloj(m):
-        await m.manejar(_programa(pulsos=3, periodo=periodo))
-        await _esperar(lambda: m.estado == LISTO)
+        await m.manejar(_iniciar(pasos))
+        await _esperar(lambda: m.ejecucion is None)
     assert [mk["posicion_um"] for mk in _tipos(eventos, p.EV_MARCA)] == [500.0, 1010.0, 1530.0]
 
 
@@ -327,21 +364,24 @@ async def test_en_modo_prueba_no_se_graba():
     await _armar(m)
     async with _Reloj(m):
         await m.manejar(_programa(pulsos=3, modo="PRUEBA"))
-        await _esperar(lambda: m.estado == LISTO)
+        await _esperar(lambda: m.ejecucion is None)
     assert _tipos(eventos, p.EV_MARCA) == []
     assert _tipos(eventos, p.EV_FIN)[0]["espectro"] is None
 
 
 @pytest.mark.asyncio
 async def test_abortar_corta_el_programa():
-    """El operador lo corta al terminar el pulso en curso."""
+    """El operador lo corta al terminar el pulso en curso; el shutter queda desarmado."""
     m, eventos = _maquina(velocidad=20.0)
     await _armar(m)
     async with _Reloj(m):
         await m.manejar(_programa(pulsos=50))
-        await _esperar(lambda: m.ejecucion and m.ejecucion["pulso"] >= 1)
+        await _esperar(lambda: _pulsos_hechos(m) >= 1)
         await m.manejar({"accion": p.ABORTAR})
-        await _esperar(lambda: m.estado == LISTO)
+        await _esperar(lambda: m.ejecucion is None)
+        m.tick(0.01)
+    assert m.estado == PREPARANDO  # parada segura: shutter desarmado y laser apagado
+    assert not (m.hal.shutter_armado or m.hal.laser)
     (abortado,) = _tipos(eventos, p.EV_ABORTADO)
     assert 1 <= abortado["marcas"] < 50
     assert _tipos(eventos, p.EV_FIN) == []
@@ -365,7 +405,7 @@ async def test_el_e_stop_apaga_en_orden_y_mide_la_respuesta():
     await _armar(m)
     async with _Reloj(m):
         await m.manejar(_programa(pulsos=50))
-        await _esperar(lambda: m.ejecucion and m.ejecucion["pulso"] >= 1)
+        await _esperar(lambda: _pulsos_hechos(m) >= 1)
         await m.manejar({"accion": p.EMERGENCIA, "origen": "OPERADOR"})
         await asyncio.sleep(0.05)
 
@@ -501,25 +541,6 @@ def test_la_telemetria_lleva_todo_lo_que_usa_el_front():
     }
     assert len(t["variables"]) == 7
     assert json.dumps(t)  # serializable
-
-
-@pytest.mark.django_db
-@pytest.mark.parametrize(
-    "tipo,base,incremento,factor",
-    [
-        ("CONSTANTE", 550.0, None, None),
-        ("LINEAL", 500.0, 12.5, None),
-        ("EXPONENCIAL", 500.0, None, 1.02),
-    ],
-)
-def test_el_controlador_calcula_el_periodo_igual_que_django(tipo, base, incremento, factor):
-    """La formula esta duplicada (el controlador no importa Django): tienen que coincidir."""
-    from programas.models import Periodo
-
-    periodo = Periodo(tipo=tipo, periodo_base=base, incremento=incremento, factor=factor)
-    dic = {"tipo": tipo, "base_um": base, "incremento_um": incremento, "factor": factor}
-    for n in range(20):
-        assert distancia_de_marca(dic, n) == pytest.approx(periodo.calcular_distancia(n))
 
 
 # ── Cableado con Redis (main.py) ─────────────────────────────────────────────

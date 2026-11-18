@@ -64,15 +64,16 @@ FUENTES: dict[str, tuple[str, str]] = {
     "extra.frecuencia_hz": (NUM, "Frecuencia de pulsos [Hz]"),
     "ejecucion.activa": (BOOL, "Hay un programa ejecutandose"),
     "ejecucion.modo": (TEXTO, "Modo de la ejecucion (REAL, PRUEBA)"),
-    "ejecucion.pulso": (NUM, "Pulso en curso"),
-    "ejecucion.pulsos": (NUM, "Pulsos totales de la ejecucion"),
-    "ejecucion.progreso": (NUM, "Progreso de la ejecucion (0 a 1)"),
-    "ejecucion.distancia_mm": (NUM, "Distancia recorrida [mm]"),
+    "ejecucion.acciones": (NUM, "Acciones terminadas de la ejecucion"),
+    "ejecucion.total": (NUM, "Acciones del programa, con los bucles expandidos"),
+    "ejecucion.pulsos": (NUM, "Pulsos ejecutados hasta ahora"),
+    "ejecucion.progreso": (NUM, "Progreso de la ejecucion (0 a 1): acciones sobre el total"),
+    "ejecucion.ubicacion": (TEXTO, "Paso en curso (p. ej. Paso 2.1 · iteracion 3 de 100)"),
+    "ejecucion.ultimo_pulso_ms": (NUM, "Duracion real del ultimo pulso [ms]"),
     "programa.seleccionado": (BOOL, "Hay un programa elegido"),
-    "programa.tiene_criterio_fin": (BOOL, "El programa tiene criterio de fin"),
     "programa.nombre": (TEXTO, "Nombre del programa"),
-    "programa.distancia_mm": (NUM, "Distancia total del programa [mm]"),
-    "programa.pulsos": (NUM, "Pulsos estimados del programa"),
+    "programa.pulsos": (NUM, "Pulsos del programa"),
+    "programa.duracion_min_s": (NUM, "Duracion minima del programa [s]"),
     "ensayo.lanzado": (BOOL, "Se lanzo un ensayo desde este procedimiento"),
     "ensayo.terminado": (BOOL, "El ensayo lanzado ya termino y quedo registrado"),
     "ensayo.completado": (BOOL, "El ensayo lanzado termino completo"),
@@ -92,11 +93,11 @@ INICIAR_REAL, INICIAR_PRUEBA = "iniciar_real", "iniciar_prueba"
 
 # Comandos que un paso puede ofrecer como boton. Quedan afuera los globales
 # (emergencia y rearme tienen su propio control siempre visible), la inyeccion
-# de fallas (es del simulador) y mover el motor (necesita un parametro).
+# de fallas (es del simulador), mover el motor (necesita un parametro) y habilitar
+# la alta tension (se habilita solo con el boton fisico del laboratorio, spec 5.8).
 ACCIONES: dict[str, str] = {
     p.ENCENDER_REFRIGERACION: "Encender refrigeracion",
     p.APAGAR_REFRIGERACION: "Apagar refrigeracion",
-    p.HABILITAR_AT: "Habilitar alta tension",
     p.DESHABILITAR_AT: "Deshabilitar alta tension",
     p.ALINEAR_FIBRA: "Alinear fibra",
     p.ARMAR_SHUTTER: "Armar shutter",

@@ -8,8 +8,16 @@ from uuid import uuid4
 
 import pytest
 
+from controller.factory import REGISTRO_COMPONENTES, registrar_componente
+from controller.drivers import SalidaGPIO
+from controller.hal_base import OperacionRechazada
 from controller.hardware import GestorHardware
-from controller.hardware_config import guardar_archivo, pin_bcm, validar_configuracion
+from controller.hardware_config import (
+    catalogo,
+    guardar_archivo,
+    pin_bcm,
+    validar_configuracion,
+)
 
 
 class PinFalso:
@@ -62,7 +70,7 @@ def motor():
         "tipo": "STEPPER_DRV8825",
         "estado": "Vigente",
         "pines": {"pin_step": 22, "pin_dir": 23, "pin_enable": 24},
-        "parametros": {"pasos_por_mm": 200, "carrera_max_mm": 10, "velocidad_mm_s": 1},
+        "parametros": {"pasos_por_unidad": 200, "minimo": 0, "maximo": 10, "velocidad_maxima": 1},
     }
 
 
@@ -193,7 +201,7 @@ def test_nombre_de_componente_no_permite_compartir_pines_reservados_spi():
 @pytest.mark.parametrize("valor", [float("nan"), float("inf"), True, 0, -1])
 def test_motor_rechaza_parametros_invalidos(valor):
     config = motor()
-    config["parametros"]["pasos_por_mm"] = valor
+    config["parametros"]["pasos_por_unidad"] = valor
     with pytest.raises(ValueError):
         validar_configuracion({"componentes": {"eje": config}})
 
@@ -258,10 +266,12 @@ async def test_baja_se_aplica_solo_despues_de_detener(tmp_path):
 @pytest.mark.asyncio
 async def test_motor_exige_referencia_y_emergencia_cancela_reapertura(tmp_path):
     async with sistema(tmp_path, {"eje": motor(), "s": componente()}) as (g, b, _):
-        assert (await ejecutar(g, "eje", "mover", posicion_mm=1))["estado"] == "RECHAZADO"
-        await ejecutar(g, "eje", "referenciar", posicion_mm=0)
+        assert (await ejecutar(g, "eje", "mover_a", posicion=1, velocidad=1))[
+            "estado"
+        ] == "RECHAZADO"
+        await ejecutar(g, "eje", "referenciar", posicion=0)
         await ejecutar(g, "s", "armar")
-        mover = orden(g, "eje", "mover", posicion_mm=8)
+        mover = orden(g, "eje", "mover_a", posicion=8, velocidad=1)
         g.encolar(mover)
         await esperar(lambda: b.pines[24].value)
         abrir = orden(g, "s", "abrir")
@@ -283,8 +293,8 @@ async def test_lecturas_independientes_continuan_durante_movimiento(tmp_path):
         b,
         _,
     ):
-        await ejecutar(g, "eje", "referenciar", posicion_mm=0)
-        g.encolar(orden(g, "eje", "mover", posicion_mm=2))
+        await ejecutar(g, "eje", "referenciar", posicion=0)
+        g.encolar(orden(g, "eje", "mover_a", posicion=2, velocidad=1))
         await esperar(lambda: b.pines[24].value)
         b.pines[4].value = True
         await esperar(lambda: g.muestras["sensor"]["valores"]["activo"])
@@ -299,6 +309,7 @@ async def test_timeout_no_libera_recurso_fisico_ni_permite_otra_escritura(tmp_pa
         entro = threading.Event()
         driver = g.drivers["s"]
         original = driver.ejecutar
+        driver.plazo = lambda op, args: 0.05
 
         def bloqueado(op, args):
             entro.set()
@@ -433,3 +444,296 @@ async def test_lecturas_mismo_bus_no_se_superponen(tmp_path):
         await asyncio.gather(*(g._leer(n, d) for n, d in g.drivers.items()))
         assert maximo == 1
         assert leidos == 2
+
+
+def test_catalogo_sale_de_las_fichas_de_los_drivers():
+    cat = catalogo()
+    assert cat["SHUTTER_GPIO"]["pines"] == ["pin_señal"]
+    assert cat["LM35"]["campos"] == {"temperatura_c": "numero", "tension_v": "numero"}
+    assert set(cat) == set(REGISTRO_COMPONENTES)
+
+
+def test_cada_ficha_esta_completa_y_usa_tipos_conocidos():
+    catalogo()
+    for tipo, clase in REGISTRO_COMPONENTES.items():
+        assert clase.CAMPOS, tipo
+        for args in clase.COMANDOS.values():
+            assert set(args.values()) <= {"numero", "entero", "booleano"}, tipo
+        assert set(clase.CAMPOS.values()) <= {"numero", "booleano"}, tipo
+
+
+def test_driver_nuevo_se_agrega_en_un_solo_lugar(tmp_path):
+    from controller.drivers import SalidaGPIO
+
+    @registrar_componente("PRUEBA_RELE")
+    class Rele(SalidaGPIO):
+        COMANDOS = {"encender": {}, "apagar": {}, "pulsar": {"ms": "entero"}}
+
+    try:
+        cfg = validar_configuracion({"componentes": {"r": componente("PRUEBA_RELE", 5)}})
+        assert cfg["componentes"]["r"]["tipo"] == "PRUEBA_RELE"
+        assert "pulsar" in catalogo()["PRUEBA_RELE"]["operaciones"]
+    finally:
+        REGISTRO_COMPONENTES.pop("PRUEBA_RELE")
+
+
+class DriverConSalida(SalidaGPIO):
+    """Driver de prueba que devuelve un dato y define su propio plazo."""
+
+    COMANDOS = {"medir": {}, "lento": {}}
+
+    def ejecutar(self, operacion, argumentos):
+        if operacion == "lento":
+            time.sleep(0.5)
+        return {"x": 1}
+
+    def plazo(self, comando, argumentos):
+        return 0.1 if comando == "lento" else 5.0
+
+
+@pytest.fixture(autouse=True)
+def _registrar_driver_con_salida():
+    registrar_componente("PRUEBA_SALIDA")(DriverConSalida)
+    yield
+    REGISTRO_COMPONENTES.pop("PRUEBA_SALIDA", None)
+
+
+@pytest.mark.asyncio
+async def test_resultado_aplicado_trae_la_salida_del_driver(tmp_path):
+    async with sistema(tmp_path, {"d": componente("PRUEBA_SALIDA", 5)}) as (g, _, _):
+        res = await ejecutar(g, "d", "medir")
+        assert res["estado"] == "APLICADO"
+        assert res["salida"] == {"x": 1}
+        assert res["detalle"]
+
+
+@pytest.mark.asyncio
+async def test_ejecutar_y_esperar_devuelve_la_salida_cuando_aplica(tmp_path):
+    componentes = {"d": componente("PRUEBA_SALIDA", 5), "s": componente()}
+    async with sistema(tmp_path, componentes) as (g, _, _):
+        assert await g.ejecutar_y_esperar("d", "medir", {}) == {"x": 1}
+        assert await g.ejecutar_y_esperar("s", "armar", {}) == {}
+        assert not g._esperas
+
+
+@pytest.mark.asyncio
+async def test_si_emitir_falla_la_espera_igual_se_resuelve(tmp_path):
+    """El resultado llega a quien espera antes de emitir el evento (m-7)."""
+    async with sistema(tmp_path, {"d": componente("PRUEBA_SALIDA", 5)}) as (g, _, _):
+
+        def emitir_roto(*_args):
+            raise RuntimeError("bus caído")
+
+        g.emitir = emitir_roto
+        salida = await asyncio.wait_for(g.ejecutar_y_esperar("d", "medir", {}), 2)
+        assert salida == {"x": 1}
+        g.emitir = lambda *_args: None  # el cierre del sistema también emite
+
+
+@pytest.mark.asyncio
+async def test_ejecutar_y_esperar_lanza_con_el_motivo_del_driver(tmp_path):
+    async with sistema(tmp_path, {"s": componente()}) as (g, _, _):
+        with pytest.raises(OperacionRechazada) as exc:
+            await g.ejecutar_y_esperar("s", "abrir", {})
+        assert "Arme el shutter" in str(exc.value)
+
+
+@pytest.mark.asyncio
+async def test_ejecutar_y_esperar_lanza_si_hay_emergencia(tmp_path):
+    async with sistema(tmp_path, {"s": componente()}) as (g, _, _):
+        g.detener()
+        with pytest.raises(OperacionRechazada):
+            await g.ejecutar_y_esperar("s", "armar", {})
+
+
+@pytest.mark.asyncio
+async def test_ejecutar_y_esperar_se_resuelve_si_detener_vacia_la_cola(tmp_path):
+    componentes = {"s": componente(), "d": componente("PRUEBA_SALIDA", 5)}
+    async with sistema(tmp_path, componentes) as (g, _, _):
+        g.encolar(orden(g, "d", "medir"))  # ocupa el escritor
+        tarea = asyncio.create_task(g.ejecutar_y_esperar("s", "armar", {}))
+        await asyncio.sleep(0)
+        g.detener()
+        with pytest.raises(OperacionRechazada):
+            await asyncio.wait_for(tarea, 2)
+        assert not g._esperas
+
+
+@pytest.mark.asyncio
+async def test_el_plazo_lo_define_el_driver(tmp_path):
+    async with sistema(tmp_path, {"d": componente("PRUEBA_SALIDA", 5)}) as (g, _, _):
+        inicio = time.monotonic()
+        res = await ejecutar(g, "d", "lento")
+        assert res["estado"] == "FALLIDO"
+        assert time.monotonic() - inicio < 0.4
+
+
+@pytest.mark.asyncio
+async def test_la_parada_propia_guarda_la_causa_hasta_rearmar(tmp_path):
+    async with sistema(tmp_path, {"d": componente("PRUEBA_SALIDA", 5)}) as (g, _, _):
+        assert g.causa_parada is None
+        res = await ejecutar(g, "d", "lento")
+        assert res["estado"] == "FALLIDO"
+        assert g.causa_parada == f"d.lento: {res['detalle']}"
+        g.detener("otra causa")  # conserva la primera
+        assert g.causa_parada.startswith("d.lento")
+        await esperar(lambda: not g._io and g._parando.done())
+        with pytest.raises(ValueError):
+            g.rearmar()  # el recurso quedó en cuarentena por el timeout
+        assert g.causa_parada.startswith("d.lento")
+    # Una parada que sí se puede rearmar: rearmar borra la causa.
+    (tmp_path / "b").mkdir()
+    async with sistema(tmp_path / "b", {"d": componente("PRUEBA_SALIDA", 5)}) as (g, _, _):
+        g.detener("lectura de d: TimeoutError")
+        assert g.causa_parada == "lectura de d: TimeoutError"
+        await esperar(lambda: not g._io and not g._ordenes and g._parando.done())
+        g.rearmar()
+        assert g.emergencia is False
+        assert g.causa_parada is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("nombre", "comando", "argumentos"),
+    [
+        ("eje", "mover_a", {}),
+        ("eje", "mover_a", {"posicion": "mucho", "velocidad": 1}),
+        ("fantasma", "armar", {}),
+    ],
+)
+async def test_ejecutar_y_esperar_rechaza_argumentos_o_componente_invalidos(
+    tmp_path, nombre, comando, argumentos
+):
+    async with sistema(tmp_path, {"eje": motor()}) as (g, _, _):
+        with pytest.raises(OperacionRechazada):
+            await g.ejecutar_y_esperar(nombre, comando, argumentos)
+        assert not g._esperas
+
+
+@pytest.mark.asyncio
+async def test_pulso_dura_lo_pedido_y_deja_el_shutter_cerrado(tmp_path):
+    async with sistema(tmp_path, {"s": componente()}) as (g, b, _):
+        await ejecutar(g, "s", "armar")
+        salida = await g.ejecutar_y_esperar("s", "pulso", {"duracion_ms": 50})
+        assert abs(salida["duracion_real_ms"] - 50) < 5
+        assert salida["cancelado"] is False
+        assert b.pines[17].value is False
+        assert b.pines[17].historial[-2:] == [True, False]
+
+
+@pytest.mark.asyncio
+async def test_pulso_sin_armar_se_rechaza(tmp_path):
+    async with sistema(tmp_path, {"s": componente()}) as (g, b, _):
+        resultado = await ejecutar(g, "s", "pulso", duracion_ms=50)
+        assert resultado["estado"] == "RECHAZADO"
+        assert True not in b.pines[17].historial
+
+
+@pytest.mark.asyncio
+async def test_emergencia_corta_el_pulso_y_cierra(tmp_path):
+    async with sistema(tmp_path, {"s": componente()}) as (g, b, _):
+        await ejecutar(g, "s", "armar")
+        cmd = orden(g, "s", "pulso", duracion_ms=2000)
+        g.encolar(cmd)
+        await esperar(lambda: b.pines[17].value)
+        await asyncio.sleep(0.1)
+        t0 = time.monotonic()
+        g.detener()
+        await esperar(lambda: not b.pines[17].value, 0.3)
+        assert time.monotonic() - t0 < 0.3
+        await esperar(lambda: g.resultados[cmd["id"]]["estado"] not in ("EN_COLA", "EJECUTANDO"))
+        assert g.resultados[cmd["id"]]["estado"] == "CANCELADO"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("duracion", [0, 10001])
+async def test_pulso_fuera_de_rango_se_rechaza(tmp_path, duracion):
+    async with sistema(tmp_path, {"s": componente()}) as (g, b, _):
+        await ejecutar(g, "s", "armar")
+        resultado = await ejecutar(g, "s", "pulso", duracion_ms=duracion)
+        assert resultado["estado"] == "RECHAZADO"
+        assert "entre 1 y 10000" in str(resultado)
+        assert True not in b.pines[17].historial
+
+
+# ── Escrituras concurrentes por recurso ──────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_recursos_distintos_se_escriben_a_la_vez(tmp_path):
+    """Un pulso largo y un movimiento se superponen; ninguno vence esperando al otro."""
+    async with sistema(tmp_path, {"eje": motor(), "s": componente()}) as (g, b, _):
+        await g.ejecutar_y_esperar("eje", "referenciar", {"posicion": 0})
+        await g.ejecutar_y_esperar("s", "armar", {})
+        eje = g.drivers["eje"]
+        superpuestos = []
+
+        async def observar():
+            while True:
+                if b.pines[17].value and eje.en_movimiento:
+                    superpuestos.append(time.monotonic())
+                await asyncio.sleep(0.002)
+
+        observador = asyncio.create_task(observar())
+        try:
+            pulso, movimiento = await asyncio.gather(
+                g.ejecutar_y_esperar("s", "pulso", {"duracion_ms": 600}),
+                g.ejecutar_y_esperar("eje", "mover", {"delta": 0.2, "velocidad": 1}),
+            )
+        finally:
+            observador.cancel()
+        assert superpuestos, "el pulso y el movimiento no se superpusieron"
+        assert pulso["duracion_real_ms"] == pytest.approx(600, abs=10)
+        assert eje.pasos == 40
+        assert [r["estado"] for r in g.resultados.values()].count("VENCIDO") == 0
+
+
+@pytest.mark.asyncio
+async def test_un_mismo_recurso_se_escribe_en_orden_y_de_a_una(tmp_path):
+    async with sistema(tmp_path, {"s": componente()}) as (g, _, _):
+        driver = g.drivers["s"]
+        original = driver.ejecutar
+        tramos = []
+
+        def registrar(operacion, argumentos):
+            inicio = time.monotonic()
+            salida = original(operacion, argumentos)
+            tramos.append((operacion, inicio, time.monotonic()))
+            return salida
+
+        driver.ejecutar = registrar
+        await asyncio.gather(
+            g.ejecutar_y_esperar("s", "armar", {}),
+            g.ejecutar_y_esperar("s", "pulso", {"duracion_ms": 100}),
+            g.ejecutar_y_esperar("s", "abrir", {}),
+            g.ejecutar_y_esperar("s", "cerrar", {}),
+        )
+        assert [t[0] for t in tramos] == ["armar", "pulso", "abrir", "cerrar"]
+        for anterior, siguiente in zip(tramos, tramos[1:], strict=False):
+            assert anterior[2] <= siguiente[1]
+
+
+@pytest.mark.asyncio
+async def test_detener_con_escrituras_concurrentes_cancela_todo_y_resuelve_esperas(tmp_path):
+    async with sistema(tmp_path, {"eje": motor(), "s": componente()}) as (g, b, _):
+        await g.ejecutar_y_esperar("eje", "referenciar", {"posicion": 0})
+        await g.ejecutar_y_esperar("s", "armar", {})
+        esperas = [
+            asyncio.create_task(g.ejecutar_y_esperar("s", "pulso", {"duracion_ms": 5000})),
+            asyncio.create_task(g.ejecutar_y_esperar("eje", "mover", {"delta": 8, "velocidad": 1})),
+            # Detrás del pulso, en el mismo recurso: espera su turno.
+            asyncio.create_task(g.ejecutar_y_esperar("s", "abrir", {})),
+        ]
+        await esperar(lambda: b.pines[17].value and g.drivers["eje"].en_movimiento)
+        assert len(g.estado()["en_ejecucion"]) == 2
+        t0 = time.monotonic()
+        g.detener()
+        resultados = await asyncio.wait_for(asyncio.gather(*esperas, return_exceptions=True), 2)
+        assert time.monotonic() - t0 < 1.5
+        assert all(isinstance(r, OperacionRechazada) for r in resultados), resultados
+        await esperar(lambda: g.todo_seguro() and not g.actual and g._parando.done())
+        assert not b.pines[17].value
+        assert g.drivers["eje"].referenciado is False
+        assert not g._esperas and not g._ordenes
+        # La emergencia queda enclavada: no se aceptan órdenes nuevas hasta rearmar.
+        assert g.encolar(orden(g, "s", "abrir"))["estado"] == "RECHAZADO"

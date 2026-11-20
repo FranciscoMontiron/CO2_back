@@ -49,6 +49,8 @@ DESHABILITAR_AT = "deshabilitar_at"
 ALINEAR_FIBRA = "alinear_fibra"
 ARMAR_SHUTTER = "armar_shutter"
 DESARMAR_SHUTTER = "desarmar_shutter"
+ABRIR_SHUTTER = "abrir_shutter"
+CERRAR_SHUTTER = "cerrar_shutter"
 ENCENDER_LASER = "encender_laser"
 APAGAR_LASER = "apagar_laser"
 MOVER_MOTOR = "mover_motor"
@@ -69,6 +71,8 @@ COMANDOS_SIMPLES = {
     ALINEAR_FIBRA,
     ARMAR_SHUTTER,
     DESARMAR_SHUTTER,
+    ABRIR_SHUTTER,
+    CERRAR_SHUTTER,
     ENCENDER_LASER,
     APAGAR_LASER,
     MOVER_MOTOR,

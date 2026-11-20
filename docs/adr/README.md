@@ -20,6 +20,7 @@ sobrevivir a los cambios de opinión.
 | [0009](0009-protocolo-del-bus-y-servicio-de-eventos.md) | Protocolo del bus y servicio de eventos | Aceptada (completa a 0004) |
 | [0010](0010-programa-de-grabado-con-perfil-de-periodo-y-version.md) | Programa de grabado: perfil de período editable y versión por edición | Aceptada |
 | [0011](0011-hmi-alto-rendimiento-isa-101.md) | La interfaz sigue los principios de HMI de alto rendimiento (ISA-101) | Propuesta |
+| [0012](0012-una-interfaz-para-simulado-y-gpio.md) | Una sola interfaz para el hardware simulado y el GPIO | Propuesta |
 
 ## Estados
 

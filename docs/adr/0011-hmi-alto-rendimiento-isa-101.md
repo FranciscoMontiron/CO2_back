@@ -48,12 +48,29 @@ Con la pantalla totalmente neutra costaba confirmar de un vistazo que el sistema
 - **Shutter**: el badge muestra armado (verde, `activo`) o desarmado (gris), y el valor muestra abierto o cerrado en neutro. En el gráfico, abierto/cerrado es una señal escalonada gris, sin color de fondo.
 - Ninguno de los dos lleva relleno en la tarjeta ni animación, para no restarle peso al amarillo y al rojo.
 
+### Ajuste: el estado y la parada siempre a la vista; modales solo para avisos y confirmaciones
+
+Requisito no funcional: la cabecera con el estado del sistema y la parada de emergencia tiene que estar **siempre visible y accesible**. Los modales la grisaban o la tapaban y no se podía hacer clic sobre ella. Era una falla real, no solo estética:
+
+- ISA-101 pide un área de estado persistente que ninguna tarea secundaria oculte (misma advertencia de fuentes de arriba).
+- ISO 13850 / IEC 60204-1 piden que la parada de emergencia esté disponible y operativa en todo momento. La parada **real** es el pulsador físico cableado (ADR-0002). El botón de la pantalla no es una función de seguridad, pero si se ofrece tiene que respetar el mismo principio: si un diálogo la bloquea, no está disponible.
+- Caso concreto: con un aviso del sistema abierto y el equipo fuera de emergencia, el botón de parada estaba habilitado pero bloqueado por el diálogo.
+
+Decisión:
+
+1. **Ninguna capa superpuesta cubre la cabecera.** El fondo de modales y avisos empieza debajo de ella, y los `<dialog>` se abren con `show()`, nunca con `showModal()`, que vuelve inerte toda la página. El encabezado del menú lateral mide lo mismo que la cabecera para que el fondo arranque en la misma línea.
+2. **Los modales quedan solo para avisos del sistema y confirmaciones.** Las confirmaciones usan un único componente (`Confirmacion`): foco inicial en «Cancelar», Escape cancela, y **si el equipo pasa a emergencia se cancela sola**, para que la acción pendiente nunca se aplique después de una parada.
+3. **Alta, edición y detalle se muestran en el cuerpo de la página**, en el lugar de la tabla o la grilla: programas, procedimientos, usuarios, umbrales, componentes y el detalle de tendencia de telemetría.
+4. **Páginas de alto fijo.** En Historial, Programas, Procedimientos, Alertas y Administración la página no se desplaza: lo hace el panel o la tabla que se muestra. Títulos, cabeceras de tabla y botones de formulario quedan siempre a la vista. Telemetría y Nuevo ensayo ya tenían diseño fijo. **Excepciones:** Simulador visual y Control manual mantienen el desplazamiento de página. En pantallas angostas o bajas (menos de 901 × 501 px) también se mantiene.
+
 ## Consecuencias
 
 - `Telemetria.tsx`: los canales ya no tienen campo `color`. El color del valor depende solo de si está fuera de límite.
 - `Telemetria.css` e `index.css`: tokens nuevos de tendencia y clases `activo`, `warn`, `alarm`. Desaparece `info` del dashboard; `ok` vuelve solo para condiciones confirmadas (ver "Ajuste: verde para lo correcto").
 - Si se agrega un canal nuevo, **no se le asigna color**: hereda la regla neutra.
 - La pantalla en normal se ve "apagada" a propósito. Es lo que hace que una advertencia salte a la vista.
+- `AvisoEmergencia`, `Confirmacion` y las clases `.modal-bg`, `.capa-bajo-cabecera` y `.dialogo-bajo-cabecera` (front) usan `--header-outer-height`, la altura medida de la cabecera. Un modal nuevo tiene que usar `Confirmacion` o esas clases, y un `<dialog>` nuevo, `show()`.
+- Un formulario nuevo va en la página con `form-panel`, `form-grid` y `form-actions`, no en un modal. Una página nueva entra en el alto fijo agregándola a `PAGINA_FIJA` (`AppLayout.tsx`).
 
 ## Fuera de alcance (pendiente)
 

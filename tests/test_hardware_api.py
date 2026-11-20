@@ -149,3 +149,20 @@ def test_resultado_hardware_se_persiste_una_sola_vez(usuario):
     assert asientos.count() == 1
     assert asientos.get().usuario == usuario
     assert json.loads(asientos.get().valor_nuevo)["estado"] == "APLICADO"
+
+
+@pytest.mark.django_db
+def test_aplicar_sin_controlador_gpio_no_se_envia(cliente_hardware, usuario):
+    """Con el HAL simulado no hay estado GPIO: aplicar se rechaza y no llega al controlador."""
+    cliente, bus = cliente_hardware
+    usuario.is_superuser = True
+    usuario.save()
+    respuesta = cliente.post("/api/hardware/aplicar/")
+    assert respuesta.status_code == 409
+    assert "modo GPIO" in respuesta.data["detail"]
+    assert bus.comandos == []
+    bus.estado = {
+        "emergencia": False, "aplicando": False, "revision_aplicada": None, "componentes": {}
+    }
+    assert cliente.post("/api/hardware/aplicar/").status_code == 202
+    assert bus.comandos[-1]["accion"] == p.APLICAR_HARDWARE

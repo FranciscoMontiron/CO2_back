@@ -299,6 +299,11 @@ class Maquina:
             except ValueError as exc:
                 self._avisar(str(exc), "error")
             return
+        if accion == p.APLICAR_HARDWARE:
+            # La configuración de componentes es del modo GPIO; el HAL simulado tiene
+            # sus componentes fijos. No es un error: no hay nada que aplicar.
+            logger.info("aplicar_hardware ignorado: el HAL no es GPIO")
+            return
         try:
             manejador = self._manejadores()[accion]
         except KeyError:

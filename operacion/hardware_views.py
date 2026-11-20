@@ -177,11 +177,21 @@ class HardwareAplicarView(APIView):
     def post(self, request):
         """Valida y procesa la petición sin acceder directamente al hardware."""
         try:
+            # Solo el controlador en modo GPIO publica estado de hardware y sabe aplicar
+            # la configuración de componentes; con el HAL simulado no tiene efecto.
+            if not estado_hardware():
+                return Response(
+                    {
+                        "detail": "La configuración de componentes solo se aplica con el "
+                        "controlador en modo GPIO. En modo simulado no tiene efecto."
+                    },
+                    status=409,
+                )
             control.enviar(
                 p.APLICAR_HARDWARE, usuario=request.user, ip=request.META.get("REMOTE_ADDR")
             )
             return Response(
                 {"detail": "Reintento solicitado; consulte la revisión aplicada."}, status=202
             )
-        except control.ControladorNoDisponibleError as exc:
+        except (redis.RedisError, control.ControladorNoDisponibleError) as exc:
             return Response({"detail": str(exc)}, status=503)

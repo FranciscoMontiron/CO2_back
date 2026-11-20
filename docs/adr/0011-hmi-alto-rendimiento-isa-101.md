@@ -63,6 +63,16 @@ Decisión:
 3. **Alta, edición y detalle se muestran en el cuerpo de la página**, en el lugar de la tabla o la grilla: programas, procedimientos, usuarios, umbrales, componentes y el detalle de tendencia de telemetría.
 4. **Páginas de alto fijo.** En Historial, Programas, Procedimientos, Alertas y Administración la página no se desplaza: lo hace el panel o la tabla que se muestra. Títulos, cabeceras de tabla y botones de formulario quedan siempre a la vista. Telemetría y Nuevo ensayo ya tenían diseño fijo. **Excepciones:** Simulador visual y Control manual mantienen el desplazamiento de página. En pantallas angostas o bajas (menos de 901 × 501 px) también se mantiene.
 
+### Ajuste: el usuario elige qué tarjetas ve, pero una condición anormal no se puede ocultar
+
+Requisito: el dashboard es configurable. Cada usuario elige qué tarjetas de telemetría ve.
+
+1. **Se edita en el dashboard, no en una pantalla aparte.** El engranaje «Vista del dashboard» de la barra lateral tiene la opción **Edición**: la grilla muestra las nueve tarjetas, las ocultas atenuadas y con borde punteado, y cada toque muestra u oculta una. «Mostrar todas» restablece la grilla y «Listo» o Escape cierran la edición. No es una entrada del menú: el menú lleva a pantallas, y esto es una preferencia de la vista que se ajusta viendo el resultado.
+2. **Al menos dos tarjetas visibles.** Cuando quedan dos, no se pueden ocultar.
+3. **Una tarjeta oculta reaparece mientras su canal esté en advertencia (`warn`) o fuera de límite (`alarm`)**, marcada como «Oculta». Ocultar es una preferencia de lectura y no puede esconder una condición anormal, que es justo lo que ISA-101 pide resaltar.
+4. **Las tarjetas no se agrandan al ocultar otras.** Con seis o menos la grilla queda en 3 × 2, el tamaño estándar de tarjeta, y las celdas que sobran quedan vacías (con tres tarjetas se ve solo la primera fila). Con siete a nueve es 3 × 3. En el teléfono se aplica la misma selección, en dos columnas. La edición solo está en pantallas grandes, igual que el resto del panel de vista.
+5. **Se guarda en el navegador** (`localStorage`, clave `co2.telemetria.ocultas`), como el resto de las preferencias de vista. Si lo guardado deja menos de dos tarjetas o está dañado, se muestran todas.
+
 ## Consecuencias
 
 - `Telemetria.tsx`: los canales ya no tienen campo `color`. El color del valor depende solo de si está fuera de límite.
@@ -76,6 +86,7 @@ Decisión:
 
 - **Página de Alertas / Eventos según ISA-18.2 / IEC 62682**: prioridades, estados de alarma y reconocimiento.
 - **Resto de pantallas** (nuevo ensayo, control manual, simulador, barra lateral): todavía usan colores de acento. El verde de la navegación activa es decorativo y conviene neutralizarlo.
+- **Dashboard por usuario y orden de tarjetas**: la selección de tarjetas se guarda por navegador. Guardarla en el back por usuario y permitir reordenarlas queda para una segunda etapa.
 - **Advertencia por cercanía al límite** (por ejemplo, al 90 %): requiere definir umbrales de pre-alarma en el back.
 
 ## Alternativas descartadas
